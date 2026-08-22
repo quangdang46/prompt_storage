@@ -91,6 +91,27 @@ pub enum MigrationError {
     Sql(#[from] rusqlite::Error),
 }
 
+impl MigrationError {
+    /// Machine-readable payload matching the pinned error contract:
+    /// {"error":"schema_too_new","db_version":N,"supported":M}
+    pub fn to_contract_json(&self) -> serde_json::Value {
+        match self {
+            MigrationError::Downgrade {
+                db_version,
+                supported,
+            } => serde_json::json!({
+                "error": "schema_too_new",
+                "db_version": db_version,
+                "supported": supported,
+            }),
+            MigrationError::Sql(e) => serde_json::json!({
+                "error": "database_error",
+                "message": e.to_string(),
+            }),
+        }
+    }
+}
+
 /// Current schema version of an opened database.
 pub fn current_version(conn: &Connection) -> Result<i32, MigrationError> {
     Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
@@ -187,5 +208,22 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM aliases", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "aliases should cascade-delete with their prompt");
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[test]
+    fn downgrade_payload_matches_pinned_contract() {
+        let err = MigrationError::Downgrade {
+            db_version: 7,
+            supported: 1,
+        };
+        let payload = err.to_contract_json();
+        assert_eq!(payload["error"], "schema_too_new");
+        assert_eq!(payload["db_version"], 7);
+        assert_eq!(payload["supported"], 1);
     }
 }
