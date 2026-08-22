@@ -87,3 +87,37 @@ pub fn cmd_tags(db: &Database, as_json: bool) -> Result<i32> {
     }
     Ok(0)
 }
+
+/// `pst search <query> [--limit N]` — FTS BM25 ranked results.
+pub fn cmd_search(db: &Database, query: &str, limit: usize, as_json: bool) -> Result<i32> {
+    if query.trim().is_empty() {
+        eprintln!("{}", serde_json::json!({"error":"empty_query"}));
+        return Ok(1);
+    }
+    let hits = db.search(query, limit)?;
+    if as_json || !atty::is(atty::Stream::Stdout) {
+        let rows: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|(p, score)| {
+                serde_json::json!({
+                    "id": p.id,
+                    "title": p.title,
+                    "description": p.description,
+                    "score": score,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({ "results": rows, "query": query, "count": rows.len() })
+        );
+    } else {
+        for (p, score) in &hits {
+            println!("{:<28} {:<40} score={:.3}", p.id, p.title, score);
+        }
+        if hits.is_empty() {
+            println!("no matches");
+        }
+    }
+    Ok(0)
+}

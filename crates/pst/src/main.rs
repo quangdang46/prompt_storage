@@ -8,6 +8,7 @@ use clap::{CommandFactory, Parser};
 use pst::argv::{Prescan, prescan};
 use pst::storage::database::Database;
 use pst::storage::resolve::{ResolveOutcome, resolve};
+use std::io;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -63,6 +64,9 @@ enum Sub {
         /// Content source: FILE path or `-` for stdin
         #[arg(long, short = 'f')]
         from: Option<String>,
+        /// Declare variable: --var NAME=type[=DEFAULT]
+        #[arg(long = "var")]
+        var: Vec<String>,
         #[arg(long)]
         force: bool,
     },
@@ -148,6 +152,12 @@ enum Sub {
         personal: bool,
     },
 
+    /// Generate shell completions
+    Completion {
+        #[arg(long, default_value = "bash")]
+        shell: String,
+    },
+
     /// Manage configuration
     Config {
         action: String,
@@ -162,6 +172,13 @@ enum Sub {
     Doctor {
         #[arg(long)]
         fix: bool,
+    },
+
+    /// Full-text search prompts
+    Search {
+        query: String,
+        #[arg(long, short = 'l', default_value_t = 10)]
+        limit: usize,
     },
 
     Categories,
@@ -326,6 +343,7 @@ fn main() -> std::process::ExitCode {
             desc,
             category,
             tag,
+            var,
             from,
             force,
         }) => pst::commands::core::cmd_new(
@@ -336,6 +354,7 @@ fn main() -> std::process::ExitCode {
                 description: desc,
                 category,
                 tags: tag,
+                vars: var,
                 from,
                 force,
             },
@@ -426,6 +445,24 @@ fn main() -> std::process::ExitCode {
                 }
             }
         }
+        Some(Sub::Completion { shell }) => {
+            use clap_complete::{generate, shells};
+            let mut cmd = Cli::command();
+            match shell.as_str() {
+                "bash" => generate(shells::Bash, &mut cmd, "pst", &mut io::stdout()),
+                "zsh" => generate(shells::Zsh, &mut cmd, "pst", &mut io::stdout()),
+                "fish" => generate(shells::Fish, &mut cmd, "pst", &mut io::stdout()),
+                "powershell" => generate(shells::PowerShell, &mut cmd, "pst", &mut io::stdout()),
+                other => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"error":"unsupported_shell","shell":other})
+                    );
+                    return std::process::ExitCode::from(1);
+                }
+            }
+            return std::process::ExitCode::SUCCESS;
+        }
         Some(Sub::Config { action, key, value }) => pst::commands::system::cmd_config(
             &home,
             &action,
@@ -456,6 +493,9 @@ fn main() -> std::process::ExitCode {
                     _ => Ok(0),
                 }
             }
+        }
+        Some(Sub::Search { query, limit }) => {
+            pst::commands::discovery::cmd_search(&db, &query, limit, cli.json)
         }
         Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, cli.json),
         Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),

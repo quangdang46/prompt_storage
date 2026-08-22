@@ -40,6 +40,8 @@ pub struct NewArgs<'a> {
     pub description: Option<String>,
     pub category: Option<String>,
     pub tags: Vec<String>,
+    /// Declared variables: "NAME=type" or "NAME=type=default"
+    pub vars: Vec<String>,
     pub from: Option<String>,
     pub force: bool,
 }
@@ -152,6 +154,47 @@ pub fn cmd_new(db: &Database, args: NewArgs<'_>) -> Result<i32> {
     prompt.description = args.description.clone();
     prompt.category = args.category.clone();
     prompt.tags = args.tags.clone();
+
+    // Parse declared variables: --var NAME=type[=default]
+    for spec in &args.vars {
+        let mut parts = spec.splitn(3, '=');
+        let Some(name) = parts.next() else { continue };
+        let valid_name = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit());
+        if !valid_name {
+            return Ok(CmdError {
+                code: "invalid_var_name",
+                message: format!("variable name must be UPPER_SNAKE_CASE, got '{name}'"),
+                extra: vec![],
+                exit: 1,
+            }
+            .emit());
+        }
+        let type_str = parts.next().unwrap_or("text");
+        let default = parts.next().map(str::to_string);
+        match crate::model::VariableType::from_str_opt(type_str) {
+            Some(var_type) => prompt.variables.push(crate::model::PromptVariable {
+                name: name.to_string(),
+                var_type,
+                required: false,
+                description: None,
+                default,
+            }),
+            None => {
+                return Ok(CmdError {
+                    code: "invalid_var_type",
+                    message: format!(
+                        "type must be text|multiline|select|file|path, got '{type_str}'"
+                    ),
+                    extra: vec![],
+                    exit: 1,
+                }
+                .emit());
+            }
+        }
+    }
     db.upsert_prompt(&prompt)?;
     println!("{}", serde_json::json!({ "created": id }));
     Ok(0)
