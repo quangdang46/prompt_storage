@@ -549,10 +549,13 @@ where
 /// Escape user query text before handing it to FTS5 MATCH so special
 /// characters never panic the parser.
 pub fn escape_fts_query(query: &str) -> String {
-    // Wrap each token in double quotes; escape embedded quotes.
+    // Wrap each token in double quotes; escape embedded quotes. Tokens are
+    // OR-ed: any token matching keeps the prompt discoverable (BM25 ranks
+    // multi-token matches higher automatically). Trailing `*` gives
+    // per-token prefix matching so "sec" still finds "security".
     query
         .split_whitespace()
-        .map(|tok| format!("\"{}\"", tok.replace('"', "\"\"")))
+        .map(|tok| format!("\"{}\"*", tok.replace('"', "\"\"")))
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" OR ")
 }
