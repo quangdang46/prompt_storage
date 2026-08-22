@@ -88,23 +88,19 @@ pub fn install(root: &Path, force: bool) -> Result<InstallReport> {
     let skill_file = canon.join("SKILL.md");
 
     // Idempotency: unchanged content → no-op rewrite (but still wire links).
-    if !force && skill_file.exists() {
-        if let Ok(existing) = std::fs::read_to_string(&skill_file) {
-            if sha256_hex(&existing) == new_hash {
-                // Content identical; ensure links anyway (cheap, idempotent).
-                let mut installed = Vec::new();
-                for adapter in ADAPTERS {
-                    if wire_adapter(root, adapter, &canon, &content)? {
-                        installed.push(adapter.id);
-                    }
-                }
-                return Ok(InstallReport {
-                    canonical: skill_file,
-                    installed,
-                    skipped: vec![],
-                });
+    if !force && skill_file.exists() && same_content(&skill_file, new_hash) {
+        // Content identical; ensure links anyway (cheap, idempotent).
+        let mut installed = Vec::new();
+        for adapter in ADAPTERS {
+            if wire_adapter(root, adapter, &canon, &content)? {
+                installed.push(adapter.id);
             }
         }
+        return Ok(InstallReport {
+            canonical: skill_file,
+            installed,
+            skipped: vec![],
+        });
     }
 
     std::fs::write(&skill_file, &content)
@@ -125,9 +121,16 @@ pub fn install(root: &Path, force: bool) -> Result<InstallReport> {
     })
 }
 
+/// Compare file on disk to fresh hash.
+fn same_content(file: &Path, expected_hash: String) -> bool {
+    std::fs::read_to_string(file)
+        .map(|existing| sha256_hex(&existing) == expected_hash)
+        .unwrap_or(false)
+}
+
 /// Create/refresh the link for one adapter. Returns true when wired now,
 /// false when already correct or environment absent.
-fn wire_adapter(root: &Path, adapter: &AgentAdapter, canon: &Path, content: &str) -> Result<bool> {
+fn wire_adapter(root: &Path, adapter: &AgentAdapter, canon: &Path, _content: &str) -> Result<bool> {
     let target_dir = root.join(adapter.dir).join(SKILL_NAME);
     let _ = std::fs::create_dir_all(target_dir.parent().unwrap());
 
@@ -138,7 +141,8 @@ fn wire_adapter(root: &Path, adapter: &AgentAdapter, canon: &Path, content: &str
         if link.exists() || link.is_symlink() {
             // Already there? verify it resolves to canonical.
             if let Ok(resolved) = link.canonicalize() {
-                if resolved == canon.canonicalize().unwrap_or(canon.to_path_buf()) {
+                let canon_abs = canon.canonicalize().unwrap_or_else(|_| canon.to_path_buf());
+                if resolved == canon_abs {
                     return Ok(false);
                 }
             }
