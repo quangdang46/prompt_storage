@@ -35,9 +35,62 @@ struct Cli {
     cmd: Option<Sub>,
 }
 
-/// Catch-all: any bare positional word is a direct-mode query.
+/// Real subcommands plus a catch-all for bare direct-mode queries.
 #[derive(clap::Subcommand, Debug)]
 enum Sub {
+    /// Show prompt metadata + preview (human view)
+    Show { query: String },
+
+    /// Create a new prompt
+    New {
+        id: String,
+        #[arg(long, short = 't')]
+        title: Option<String>,
+        #[arg(long, short = 'd')]
+        desc: Option<String>,
+        #[arg(long, short = 'c')]
+        category: Option<String>,
+        #[arg(long, short = 'g')]
+        tag: Vec<String>,
+        /// Content source: FILE path or `-` for stdin
+        #[arg(long, short = 'f')]
+        from: Option<String>,
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Delete a prompt
+    Rm {
+        id: String,
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Add alias(es) to a prompt
+    Alias { id: String, aliases: Vec<String> },
+
+    /// Remove alias(es)
+    Unalias { aliases: Vec<String> },
+
+    /// List prompts
+    List {
+        #[arg(long, short = 'c')]
+        category: Option<String>,
+        #[arg(long, short = 't')]
+        tag: Option<String>,
+        #[arg(long)]
+        featured: bool,
+        #[arg(long, short = 'l')]
+        limit: Option<usize>,
+    },
+
+    /// Category counts
+    Categories,
+
+    /// Tag counts
+    Tags,
+
+    /// Direct mode catch-all: any bare word(s) resolve as a query
     #[command(external_subcommand)]
     Direct(Vec<String>),
 }
@@ -57,9 +110,7 @@ fn run_direct(db: &Database, query: &str, as_json: bool) -> Result<i32> {
             ..
         } => {
             if as_json {
-                let prompt = db
-                    .get_prompt(&content.id)?
-                    .unwrap_or_else(|| unreachable!());
+                let prompt = db.get_prompt(&content.id)?.expect("resolved exists");
                 let payload = serde_json::json!({
                     "id": prompt.id,
                     "title": prompt.title,
@@ -74,7 +125,14 @@ fn run_direct(db: &Database, query: &str, as_json: bool) -> Result<i32> {
                 });
                 println!("{payload}");
             } else {
-                println!("{}", content.raw);
+                // Contract: content + exactly one trailing \n. If the stored
+                // content already ends with a newline, print as-is; otherwise
+                // append one. Never two.
+                if content.raw.ends_with('\n') {
+                    print!("{}", content.raw);
+                } else {
+                    println!("{}", content.raw);
+                }
             }
             Ok(0)
         }
@@ -103,6 +161,17 @@ fn run_direct(db: &Database, query: &str, as_json: bool) -> Result<i32> {
     }
 }
 
+fn open_db() -> Result<Database> {
+    let home = std::env::var("PST_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            directories::ProjectDirs::from("com", "promptstorage", "pst")
+                .map(|d| d.data_dir().to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+        });
+    Database::open(&home)
+}
+
 fn main() -> std::process::ExitCode {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -125,7 +194,6 @@ fn main() -> std::process::ExitCode {
     let cli = match Cli::try_parse_from(&prescan.argv) {
         Ok(c) => c,
         Err(e) => {
-            // clap's own error rendering (includes help/version requests).
             let _ = e.print();
             return if e.exit_code() == 0 {
                 std::process::ExitCode::SUCCESS
@@ -140,18 +208,7 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
 
-    // Open the database at PST_HOME.
-    let home = std::env::var("PST_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            directories::ProjectDirs::from("com", "promptstorage", "pst")
-                .map(|d| d.data_dir().to_path_buf())
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default()
-        });
-    let db = match Database::open(&home) {
+    let db = match open_db() {
         Ok(db) => db,
         Err(e) => {
             let code = emit_error(serde_json::json!({
@@ -162,16 +219,63 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    let query = match &cli.cmd {
-        Some(Sub::Direct(words)) => words.first().map(String::as_str),
-        _ => None,
-    };
-    let Some(query) = query else {
-        let _ = Cli::command().print_help();
-        return std::process::ExitCode::SUCCESS;
+    let result: Result<i32> = match cli.cmd {
+        Some(Sub::Show { query }) => pst::commands::core::cmd_show(&db, &query, cli.json),
+        Some(Sub::New {
+            id,
+            title,
+            desc,
+            category,
+            tag,
+            from,
+            force,
+        }) => pst::commands::core::cmd_new(
+            &db,
+            pst::commands::core::NewArgs {
+                id: &id,
+                title,
+                description: desc,
+                category,
+                tags: tag,
+                from,
+                force,
+            },
+        ),
+        Some(Sub::Rm { id, force }) => pst::commands::core::cmd_rm(&db, &id, force),
+        Some(Sub::Alias { id, aliases }) => pst::commands::core::cmd_alias(&db, &id, &aliases),
+        Some(Sub::Unalias { aliases }) => pst::commands::core::cmd_unalias(&db, &aliases),
+        Some(Sub::List {
+            category,
+            tag,
+            featured,
+            limit,
+        }) => pst::commands::discovery::cmd_list(
+            &db,
+            category.as_deref(),
+            tag.as_deref(),
+            featured,
+            limit,
+            cli.json,
+        ),
+        Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, cli.json),
+        Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),
+        // Bare positional words → direct mode.
+        None | Some(Sub::Direct(_)) => {
+            let query = match &cli.cmd {
+                Some(Sub::Direct(words)) => words.first().cloned(),
+                _ => None,
+            };
+            match query {
+                Some(q) => run_direct(&db, &q, cli.json),
+                None => {
+                    let _ = Cli::command().print_help();
+                    Ok(0)
+                }
+            }
+        }
     };
 
-    match run_direct(&db, query, cli.json) {
+    match result {
         Ok(code) => std::process::ExitCode::from(code as u8),
         Err(e) => {
             eprintln!(

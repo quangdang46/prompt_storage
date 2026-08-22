@@ -6,6 +6,7 @@
 //! tests all exercise identical code paths.
 
 pub mod argv;
+pub mod commands;
 pub mod model;
 pub mod render;
 pub mod storage;
