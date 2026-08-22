@@ -323,15 +323,25 @@ impl Database {
             "#,
         )?;
         let limit_i = i64::try_from(limit.max(1)).unwrap_or(i64::MAX);
+        // Collect ids+scores first (cheap FTS scan), then hydrate each hit
+        // via get_prompt. Avoids the N+1 map-with-children pattern where
+        // OR-matched queries rank thousands of rows before LIMIT applies.
+        let mut ranked: Vec<(String, f64)> = Vec::new();
         let rows = stmt.query_map(params![escaped, limit_i], |row| {
+            let id: String = row.get(0)?;
             let score: f64 = row.get(14)?;
-            Ok((map_prompt_row(row)?, -score))
+            Ok((id, -score))
         })?;
-        let mut out = Vec::new();
         for r in rows {
-            let (mut p, score) = r?;
-            self.load_children(&mut p)?;
-            out.push((p, score));
+            ranked.push(r?);
+        }
+        drop(stmt);
+
+        let mut out = Vec::with_capacity(ranked.len());
+        for (id, score) in ranked {
+            if let Some(p) = self.get_prompt(&id)? {
+                out.push((p, score));
+            }
         }
         Ok(out)
     }
