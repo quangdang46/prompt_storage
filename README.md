@@ -84,15 +84,25 @@ when a reusable prompt plausibly exists.
 
 ## TL;DR
 
-### The Problem
+### The Problem — the copy-paste tax
 
-Prompts live scattered everywhere: markdown files in random folders, buried chat history, clipboard history you already lost, old notes apps. Every time you need *that* good code-review prompt, you either dig through folders or rewrite it from scratch — worse. And your AI coding agent has no idea any of your prompts exist.
+Every AI coding agent session, the same ritual: you remember you have a great code-review prompt somewhere. You open your notes app or dig through old chats, select the whole thing (it's 40 lines), ⌘C, switch to the agent's input box, ⌘V, hit enter. Thirty seconds later you're in business — if the paste didn't mangle formatting, if that was actually the latest version, if you remembered where it lived.
+
+Now multiply by every prompt you reuse weekly. That's a **copy-paste tax** on every single task: hunt → select → copy → switch → paste → pray. And your coding agent can't do any of it for itself.
 
 ### The Solution
 
+```bash
+# Before pst: hunt, select, copy, switch, paste, pray
+# After pst:
+pst code-review        # done. content is on stdout / in your clipboard.
+```
+
+One command, one enter. No hunting, no switching windows, no stale versions — and your agent runs the exact same command itself.
+
 `pst` collapses everything into **one SQLite database** with:
 
-- **Instant retrieval** — `pst <id>` feels like `cat file`. Exact ≤30ms, search ≤50ms (p95 budgets enforced by bench).
+- **Instant retrieval** — `pst <friendly-id>` feels like `cat file`. Exact ≤30ms, search ≤50ms (p95 budgets enforced by bench).
 - **Forgiving resolution** — can't remember the full id? unique prefixes resolve; aliases give short nicknames (`cr` → `code-review`); FTS/BM25 catches the rest.
 - **Never guesses** — ambiguity fails with candidates, never silently picks wrong content.
 - **Templating built-in** — `{{VARIABLE}}` placeholders with defaults, file vars, context injection, interactive fill.
