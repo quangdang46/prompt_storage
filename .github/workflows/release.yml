@@ -61,7 +61,7 @@ jobs:
       - name: Stage binary (Unix)
         if: matrix.os != 'windows-latest'
         run: |
-          BIN="crates/pst/target/${{ matrix.target }}/release/pst"
+          BIN="target/${{ matrix.target }}/release/pst"
           file "$BIN"
           mkdir -p stage
           cp "$BIN" "stage/pst"
@@ -72,7 +72,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path stage | Out-Null
-          Copy-Item "crates/pst/target/${{ matrix.target }}/release/pst.exe" "stage/pst.exe"
+          Copy-Item "target/${{ matrix.target }}/release/pst.exe" "stage/pst.exe"
 
       - name: Package + checksum (Unix)
         if: matrix.os != 'windows-latest'
