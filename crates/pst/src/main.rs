@@ -120,6 +120,10 @@ enum Sub {
         replace: bool,
     },
 
+    /// Interactive picker (TUI)
+    #[command(alias = "i")]
+    Interactive,
+
     /// Collection management
     Collection {
         #[command(subcommand)]
@@ -355,6 +359,28 @@ fn main() -> std::process::ExitCode {
         ),
         Some(Sub::Status) => pst::commands::system::cmd_status(&db, &home, cli.json),
         Some(Sub::Doctor { fix }) => pst::commands::system::cmd_doctor(&db, &home, fix, cli.json),
+        Some(Sub::Interactive) => {
+            if cli.json {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"error":"tty_required","hint":"interactive picker needs a terminal"})
+                );
+                Ok(1)
+            } else {
+                match pst::tui::run_tui(&db) {
+                    Ok(pst::tui::TuiAction::Copy(content)) => {
+                        // already copied inside run_tui; nothing on stdout
+                        let _ = content;
+                        Ok(0)
+                    }
+                    Ok(pst::tui::TuiAction::Print(content)) => {
+                        println!("{content}");
+                        Ok(0)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
         Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, cli.json),
         Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),
         // Bare positional words → direct mode.

@@ -29,6 +29,8 @@ toml = { workspace = true }
 rand = { workspace = true }
 atty = { workspace = true }
 sha2 = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
