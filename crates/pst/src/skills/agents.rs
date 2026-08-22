@@ -130,12 +130,14 @@ fn same_content(file: &Path, expected_hash: String) -> bool {
 
 /// Create/refresh the link for one adapter. Returns true when wired now,
 /// false when already correct or environment absent.
-fn wire_adapter(root: &Path, adapter: &AgentAdapter, canon: &Path, _content: &str) -> Result<bool> {
+fn wire_adapter(root: &Path, adapter: &AgentAdapter, canon: &Path, content: &str) -> Result<bool> {
     let target_dir = root.join(adapter.dir).join(SKILL_NAME);
     let _ = std::fs::create_dir_all(target_dir.parent().unwrap());
 
     #[cfg(unix)]
     {
+        // Symlink needs no content; silence unused param on unix builds.
+        let _ = content;
         // Compute relative path from link location to canonical.
         let link = target_dir.clone();
         if link.exists() || link.is_symlink() {
