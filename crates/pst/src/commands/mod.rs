@@ -1,4 +1,5 @@
 //! Command modules — presentation logic only (plan §3 architecture rule).
+pub mod collections;
 pub mod core;
 pub mod discovery;
 pub mod export;

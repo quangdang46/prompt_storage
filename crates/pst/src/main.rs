@@ -35,6 +35,12 @@ struct Cli {
     cmd: Option<Sub>,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum ColArgs {
+    #[command(external_subcommand)]
+    Args(Vec<String>),
+}
+
 /// Real subcommands plus a catch-all for bare direct-mode queries.
 #[derive(clap::Subcommand, Debug)]
 enum Sub {
@@ -105,6 +111,12 @@ enum Sub {
         merge: bool,
         #[arg(long, default_value_t = false)]
         replace: bool,
+    },
+
+    /// Collection management
+    Collection {
+        #[command(subcommand)]
+        args: ColArgs,
     },
 
     /// Category counts
@@ -306,6 +318,9 @@ fn main() -> std::process::ExitCode {
             };
             pst::commands::import_cmd(&db, std::path::Path::new(&path), mode)
         }
+        Some(Sub::Collection {
+            args: ColArgs::Args(a),
+        }) => pst::commands::collections::cmd_collection(&db, &a, cli.json),
         Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, cli.json),
         Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),
         // Bare positional words → direct mode.
