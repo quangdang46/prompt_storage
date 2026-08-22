@@ -10,5 +10,6 @@ pub mod clipboard;
 pub mod commands;
 pub mod model;
 pub mod render;
+pub mod skills;
 pub mod storage;
 pub mod tui;

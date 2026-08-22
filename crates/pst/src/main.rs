@@ -130,6 +130,24 @@ enum Sub {
         args: ColArgs,
     },
 
+    /// Install the prompt-storage integration skill for AI agents
+    Install {
+        #[arg(long)]
+        project: bool,
+        #[arg(long)]
+        personal: bool,
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Remove ONLY the integration skill (never touches your library)
+    Uninstall {
+        #[arg(long)]
+        project: bool,
+        #[arg(long)]
+        personal: bool,
+    },
+
     /// Manage configuration
     Config {
         action: String,
@@ -350,6 +368,52 @@ fn main() -> std::process::ExitCode {
         Some(Sub::Collection {
             args: ColArgs::Args(a),
         }) => pst::commands::collections::cmd_collection(&db, &a, cli.json),
+        Some(Sub::Install {
+            project,
+            personal,
+            force,
+        }) => {
+            let root = pst::skills::agents::resolve_root(project, personal);
+            match pst::skills::agents::install(&root, force) {
+                Ok(report) => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "installed": true,
+                            "canonical": report.canonical.display().to_string(),
+                            "adapters": report.installed,
+                        })
+                    );
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"error":"install_failed","message":e.to_string()})
+                    );
+                    Ok(1)
+                }
+            }
+        }
+        Some(Sub::Uninstall { project, personal }) => {
+            let root = pst::skills::agents::resolve_root(project, personal);
+            match pst::skills::agents::uninstall(&root) {
+                Ok(n) => {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "uninstalled": true, "artifacts": n })
+                    );
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"error":"uninstall_failed","message":e.to_string()})
+                    );
+                    Ok(1)
+                }
+            }
+        }
         Some(Sub::Config { action, key, value }) => pst::commands::system::cmd_config(
             &home,
             &action,
