@@ -159,6 +159,7 @@ fn wire_adapter(root: &Path, adapter: &AgentAdapter, canon: &Path, content: &str
     #[cfg(not(unix))]
     {
         // Copy fallback on filesystems without symlink support.
+        let _ = canon;
         let file = target_dir.join("SKILL.md");
         let needs = !file.exists()
             || std::fs::read_to_string(&file)
