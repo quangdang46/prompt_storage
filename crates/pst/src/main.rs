@@ -278,8 +278,11 @@ fn home_dir() -> std::path::PathBuf {
     std::env::var("PST_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
-            directories::ProjectDirs::from("com", "promptstorage", "pst")
-                .map(|d| d.data_dir().to_path_buf())
+            // Plan §3: XDG data dir ~/.local/share/pst (matches README +
+            // doctor/status paths; ProjectDirs on macOS points to
+            // ~/Library/Application Support instead).
+            std::env::var_os("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".local/share/pst"))
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
         })
 }
