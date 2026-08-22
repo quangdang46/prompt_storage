@@ -29,7 +29,6 @@ pub enum ResolveSource {
     Prefix,
     Fuzzy,
 }
-
 /// One candidate row for ambiguous payloads.
 #[derive(Debug, Clone, Serialize)]
 pub struct Candidate {
@@ -45,6 +44,8 @@ pub enum ResolveOutcome {
     Hit {
         id: String,
         title: String,
+        /// Resolved content (raw prompt text).
+        content: ResolvedContent,
         source: ResolveSource,
     },
     Ambiguous {
@@ -54,6 +55,13 @@ pub enum ResolveOutcome {
     NotFound {
         query: String,
     },
+}
+
+/// Content payload for a resolved hit.
+#[derive(Debug)]
+pub struct ResolvedContent {
+    pub id: String,
+    pub raw: String,
 }
 
 impl ResolveOutcome {
@@ -72,8 +80,12 @@ pub fn resolve(db: &Database, query: &str) -> Result<ResolveOutcome> {
     // 1. EXACT
     if let Some(p) = db.get_prompt(q)? {
         return Ok(ResolveOutcome::Hit {
-            id: p.id,
-            title: p.title,
+            id: p.id.clone(),
+            title: p.title.clone(),
+            content: ResolvedContent {
+                id: p.id.clone(),
+                raw: p.content.clone(),
+            },
             source: ResolveSource::Exact,
         });
     }
@@ -85,8 +97,12 @@ pub fn resolve(db: &Database, query: &str) -> Result<ResolveOutcome> {
         .transpose()?
     {
         return Ok(ResolveOutcome::Hit {
-            id: p.id,
-            title: p.title,
+            id: p.id.clone(),
+            title: p.title.clone(),
+            content: ResolvedContent {
+                id: p.id.clone(),
+                raw: p.content.clone(),
+            },
             source: ResolveSource::Alias,
         });
     }
@@ -99,8 +115,12 @@ pub fn resolve(db: &Database, query: &str) -> Result<ResolveOutcome> {
             if let Some(p) = db.get_prompt(&c.id)? {
                 db.bump_usage(&p.id)?;
                 return Ok(ResolveOutcome::Hit {
-                    id: p.id,
-                    title: p.title,
+                    id: p.id.clone(),
+                    title: p.title.clone(),
+                    content: ResolvedContent {
+                        id: p.id.clone(),
+                        raw: p.content.clone(),
+                    },
                     source: ResolveSource::Prefix,
                 });
             }
@@ -140,6 +160,10 @@ pub fn resolve(db: &Database, query: &str) -> Result<ResolveOutcome> {
     Ok(ResolveOutcome::Hit {
         id: p.id.clone(),
         title: p.title.clone(),
+        content: ResolvedContent {
+            id: p.id.clone(),
+            raw: p.content.clone(),
+        },
         source: ResolveSource::Fuzzy,
     })
 }
