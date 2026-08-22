@@ -3,6 +3,7 @@ pub mod collections;
 pub mod core;
 pub mod discovery;
 pub mod export;
+pub mod system;
 
 use crate::storage::database::Database;
 use anyhow::Result;

@@ -5,8 +5,8 @@
 
 use std::path::Path;
 
-use anyhow::Result;
 use crate::storage::database::Database;
+use anyhow::Result;
 
 /// A collection with member ids in insertion order (added_at ASC).
 /// Markdown export for one collection: heading + members with content.

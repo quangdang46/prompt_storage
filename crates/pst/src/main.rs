@@ -45,7 +45,9 @@ enum ColArgs {
 #[derive(clap::Subcommand, Debug)]
 enum Sub {
     /// Show prompt metadata + preview (human view)
-    Show { query: String },
+    Show {
+        query: String,
+    },
 
     /// Create a new prompt
     New {
@@ -73,10 +75,15 @@ enum Sub {
     },
 
     /// Add alias(es) to a prompt
-    Alias { id: String, aliases: Vec<String> },
+    Alias {
+        id: String,
+        aliases: Vec<String>,
+    },
 
     /// Remove alias(es)
-    Unalias { aliases: Vec<String> },
+    Unalias {
+        aliases: Vec<String>,
+    },
 
     /// List prompts
     List {
@@ -119,7 +126,22 @@ enum Sub {
         args: ColArgs,
     },
 
-    /// Category counts
+    /// Manage configuration
+    Config {
+        action: String,
+        key: Option<String>,
+        value: Option<String>,
+    },
+
+    /// Show library status
+    Status,
+
+    /// Health checks + repair
+    Doctor {
+        #[arg(long)]
+        fix: bool,
+    },
+
     Categories,
 
     /// Tag counts
@@ -204,15 +226,18 @@ fn run_direct(db: &Database, query: &str, as_json: bool) -> Result<i32> {
     }
 }
 
-fn open_db() -> Result<Database> {
-    let home = std::env::var("PST_HOME")
+fn home_dir() -> std::path::PathBuf {
+    std::env::var("PST_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
             directories::ProjectDirs::from("com", "promptstorage", "pst")
                 .map(|d| d.data_dir().to_path_buf())
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
-        });
-    Database::open(&home)
+        })
+}
+
+fn open_db() -> Result<Database> {
+    Database::open(&home_dir())
 }
 
 fn main() -> std::process::ExitCode {
@@ -250,7 +275,7 @@ fn main() -> std::process::ExitCode {
         let _ = Cli::command().print_help();
         return std::process::ExitCode::SUCCESS;
     }
-
+    let home = home_dir();
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => {
@@ -321,6 +346,15 @@ fn main() -> std::process::ExitCode {
         Some(Sub::Collection {
             args: ColArgs::Args(a),
         }) => pst::commands::collections::cmd_collection(&db, &a, cli.json),
+        Some(Sub::Config { action, key, value }) => pst::commands::system::cmd_config(
+            &home,
+            &action,
+            key.as_deref(),
+            value.as_deref(),
+            cli.json,
+        ),
+        Some(Sub::Status) => pst::commands::system::cmd_status(&db, &home, cli.json),
+        Some(Sub::Doctor { fix }) => pst::commands::system::cmd_doctor(&db, &home, fix, cli.json),
         Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, cli.json),
         Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),
         // Bare positional words → direct mode.
