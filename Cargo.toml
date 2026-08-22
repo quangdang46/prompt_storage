@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = ["crates/pst"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["quangdang46"]
+repository = "https://github.com/quangdang46/prompt_storage"
+
+[workspace.dependencies]
+# CLI framework
+clap = { version = "4", features = ["derive", "env", "string"] }
+clap_complete = "4"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Configuration
+directories = "6"
+toml = "0.8"
+
+# Random
+rand = "0.9"
+
+# Terminal detection
+atty = "0.2"
+
+# Hashing (skills idempotency)
+sha2 = "0.10"
+
+# TUI (consumed only by tui module)
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Testing
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
