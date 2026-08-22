@@ -231,18 +231,29 @@ pst doctor
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/prompt_storage/main/install.sh?$(date +%s)" \
   | bash -s --
 
+# macOS / Linux — easy mode (auto-updates PATH in your shell rc)
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/prompt_storage/main/install.sh" \
+  | bash -s -- --easy-mode --verify
+
+# Windows PowerShell
+irm "https://raw.githubusercontent.com/quangdang46/prompt_storage/main/install.ps1" | iex
+
 # Pin a version + verify checksums
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/prompt_storage/main/install.sh" \
   | bash -s -- --version v0.1.0 --verify
 
+# Uninstall
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/prompt_storage/main/install.sh" \
+  | bash -s -- --uninstall
+
 # From source
 git clone https://github.com/quangdang46/prompt_storage.git
 cd prompt_storage
-cargo build --release
+cargo build --release -p pst
 install -m 755 target/release/pst ~/.local/bin/
 ```
 
-Prebuilt binaries ship for `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64` with `SHA256SUMS.txt`.
+Prebuilt binaries ship for `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`, `windows-x86_64` with per-file `.sha256` sidecars plus a consolidated `SHA256SUMS.txt`. The installer verifies checksums automatically and falls back to building from source if the download fails.
 
 ---
 
