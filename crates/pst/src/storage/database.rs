@@ -75,8 +75,10 @@ impl Database {
                                  version, author, difficulty, featured, source,
                                  use_count, last_used_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                    COALESCE((SELECT use_count FROM prompts WHERE id = ?1), 0),
-                    (SELECT last_used_at FROM prompts WHERE id = ?1))
+                    CASE WHEN ?12 > 0 THEN ?12
+                         ELSE COALESCE((SELECT use_count FROM prompts WHERE id = ?1), 0) END,
+                    CASE WHEN ?13 IS NOT NULL THEN ?13
+                         ELSE (SELECT last_used_at FROM prompts WHERE id = ?1) END)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 content = excluded.content,
@@ -102,6 +104,8 @@ impl Database {
                 prompt.difficulty,
                 prompt.featured as i32,
                 prompt.source,
+                prompt.use_count,
+                prompt.last_used_at,
             ],
         )
         .context("upserting prompt row")?;
