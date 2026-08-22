@@ -4,3 +4,6 @@
 *.db-shm
 .beads/*.db
 .beads/*.db-*
+
+# bv (beads viewer) local config and caches
+.bv/
