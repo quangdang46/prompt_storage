@@ -84,6 +84,29 @@ enum Sub {
         limit: Option<usize>,
     },
 
+    /// Export prompts (JSONL backup or markdown files)
+    Export {
+        #[arg(long, value_delimiter = ',')]
+        ids: Vec<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long, short = 'f', default_value = "jsonl")]
+        format: String,
+        #[arg(long, short = 'o')]
+        out: Option<String>,
+        #[arg(long)]
+        stdout: bool,
+    },
+
+    /// Import prompts from JSONL backup
+    Import {
+        path: String,
+        #[arg(long, default_value_t = false, conflicts_with = "replace")]
+        merge: bool,
+        #[arg(long, default_value_t = false)]
+        replace: bool,
+    },
+
     /// Category counts
     Categories,
 
@@ -267,6 +290,21 @@ fn main() -> std::process::ExitCode {
         ),
         Some(Sub::Copy { query, fill }) => {
             pst::commands::copy_cmd(&db, &query, fill, cli.json, &prescan.vars)
+        }
+        Some(Sub::Export {
+            ids,
+            all,
+            format,
+            out,
+            stdout,
+        }) => pst::commands::export_cmd(&db, &ids, all, &format, out.as_deref(), stdout, cli.json),
+        Some(Sub::Import { path, replace, .. }) => {
+            let mode = if replace {
+                pst::commands::export::ImportMode::Replace
+            } else {
+                pst::commands::export::ImportMode::Merge
+            };
+            pst::commands::import_cmd(&db, std::path::Path::new(&path), mode)
         }
         Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, cli.json),
         Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),
