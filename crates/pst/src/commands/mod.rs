@@ -211,7 +211,7 @@ pub fn render_cmd(
     as_json: bool,
     prescan_vars: &[(String, String)],
 ) -> Result<i32> {
-    use crate::storage::resolve::{resolve, ResolveOutcome};
+    use crate::storage::resolve::{ResolveOutcome, resolve};
 
     match resolve(db, query)? {
         ResolveOutcome::Hit { id, .. } => {
@@ -219,8 +219,7 @@ pub fn render_cmd(
             let cwd = std::env::current_dir().unwrap_or_default();
             match crate::render::build_values(&prompt, prescan_vars, &cwd) {
                 Ok(values) => {
-                    let (rendered, _) =
-                        crate::render::render_content(&prompt.content, &values);
+                    let (rendered, _) = crate::render::render_content(&prompt.content, &values);
                     if as_json {
                         println!(
                             "{}",
@@ -262,7 +261,10 @@ pub fn forward_err(other: crate::storage::resolve::ResolveOutcome) -> Result<i32
             Ok(1)
         }
         ResolveOutcome::NotFound { query } => {
-            eprintln!("{}", serde_json::json!({ "error": "not_found", "query": query }));
+            eprintln!(
+                "{}",
+                serde_json::json!({ "error": "not_found", "query": query })
+            );
             Ok(1)
         }
         _ => unreachable!("forward_err called with Hit"),
