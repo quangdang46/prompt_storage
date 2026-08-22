@@ -90,6 +90,14 @@ enum Sub {
     /// Tag counts
     Tags,
 
+    /// Copy prompt content to clipboard (with optional variable filling)
+    Copy {
+        query: String,
+        /// Interactively fill missing variables (TTY only)
+        #[arg(long)]
+        fill: bool,
+    },
+
     /// Direct mode catch-all: any bare word(s) resolve as a query
     #[command(external_subcommand)]
     Direct(Vec<String>),
@@ -257,6 +265,9 @@ fn main() -> std::process::ExitCode {
             limit,
             cli.json,
         ),
+        Some(Sub::Copy { query, fill }) => {
+            pst::commands::copy_cmd(&db, &query, fill, cli.json, &prescan.vars)
+        }
         Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, cli.json),
         Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),
         // Bare positional words → direct mode.
