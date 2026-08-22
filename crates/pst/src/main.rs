@@ -169,6 +169,15 @@ enum Sub {
     /// Tag counts
     Tags,
 
+    /// Render prompt with variable substitution
+    Render {
+        query: String,
+        #[arg(long)]
+        fill: bool,
+        #[arg(long = "max-context")]
+        max_context: Option<usize>,
+    },
+
     /// Copy prompt content to clipboard (with optional variable filling)
     Copy {
         query: String,
@@ -347,6 +356,9 @@ fn main() -> std::process::ExitCode {
             limit,
             cli.json,
         ),
+        Some(Sub::Render { query, .. }) => {
+            pst::commands::render_cmd(&db, &query, cli.json, &prescan.vars)
+        }
         Some(Sub::Copy { query, fill }) => {
             pst::commands::copy_cmd(&db, &query, fill, cli.json, &prescan.vars)
         }

@@ -203,3 +203,68 @@ pub fn import_cmd(
         }
     }
 }
+
+/// `pst render <query> [--VAR=value...]` — print rendered prompt to stdout.
+pub fn render_cmd(
+    db: &Database,
+    query: &str,
+    as_json: bool,
+    prescan_vars: &[(String, String)],
+) -> Result<i32> {
+    use crate::storage::resolve::{resolve, ResolveOutcome};
+
+    match resolve(db, query)? {
+        ResolveOutcome::Hit { id, .. } => {
+            let prompt = db.get_prompt(&id)?.expect("resolved exists");
+            let cwd = std::env::current_dir().unwrap_or_default();
+            match crate::render::build_values(&prompt, prescan_vars, &cwd) {
+                Ok(values) => {
+                    let (rendered, _) =
+                        crate::render::render_content(&prompt.content, &values);
+                    if as_json {
+                        println!(
+                            "{}",
+                            serde_json::json!({ "id": prompt.id, "rendered": rendered })
+                        );
+                    } else if rendered.ends_with('\n') {
+                        print!("{rendered}");
+                    } else {
+                        println!("{rendered}");
+                    }
+                    Ok(0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"error":"variable_error","message":e.to_string()})
+                    );
+                    Ok(1)
+                }
+            }
+        }
+        other => forward_err(other),
+    }
+}
+
+/// Shared: emit contract-shaped stderr for non-Hit outcomes.
+pub fn forward_err(other: crate::storage::resolve::ResolveOutcome) -> Result<i32> {
+    use crate::storage::resolve::ResolveOutcome;
+    match other {
+        ResolveOutcome::Ambiguous { query, candidates } => {
+            let ids: Vec<serde_json::Value> = candidates
+                .iter()
+                .map(|c| serde_json::json!({"id": c.id, "title": c.title}))
+                .collect();
+            eprintln!(
+                "{}",
+                serde_json::json!({ "error": "ambiguous", "query": query, "candidates": ids })
+            );
+            Ok(1)
+        }
+        ResolveOutcome::NotFound { query } => {
+            eprintln!("{}", serde_json::json!({ "error": "not_found", "query": query }));
+            Ok(1)
+        }
+        _ => unreachable!("forward_err called with Hit"),
+    }
+}
