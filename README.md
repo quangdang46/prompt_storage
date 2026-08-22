@@ -121,18 +121,40 @@ One command, one enter. No hunting, no switching windows, no stale versions — 
 | 🖥️ **TUI included** | `pst i` — ratatui picker, type-to-filter, copy/print/preview |
 | 📦 **Collections** | Named prompt sets with ordered markdown export |
 
-### Comparison
+### Comparison — the same task, two workflows
+
+**Task:** use your code-review prompt in an AI coding agent session.
+
+| Step | 📋 Copy-paste (manual) | ⚡ pst |
+|---|---|---|
+| 1. Find the prompt | Open notes app / scroll chat history / dig through folders | *(nothing to find — you know the id)* |
+| 2. Select | Select all 40 lines, hope you got the whole thing | — |
+| 3. Copy | ⌘C | — |
+| 4. Switch context | Click into the agent's input box | — |
+| 5. Paste | ⌘V (pray the formatting survives) | — |
+| 6. Run | Enter | `pst code-review` + **Enter** |
+| **Total actions** | **6 steps, 2 apps, ~30s each time** | **1 command, 1 enter, <30ms** |
+
+And the agent-side difference:
+
+```text
+# Manual: you are the prompt-delivery mechanism. Every session. Forever.
+# With pst installed, the agent does it itself:
+$ pst code-review          # agent runs this, reads stdout, done
+```
+
+Versus other storage approaches:
 
 | | **pst** | Files/folders + grep | Cloud snippet managers |
 |---|---|---|---|
-| Retrieval speed | ≤30ms indexed FTS | fast but unranked | network-bound |
+| Retrieval | `pst cr` → instant, ranked | grep + eyeball filenames | search, network-bound |
 | Forgiving lookup | prefix + aliases + BM25 | exact filename only | varies |
-| Ambiguity handling | fail-loudly w/ candidates | N/A — you eyeball | silent best-match |
+| Ambiguity | fail-loudly w/ candidates | N/A — you eyeball | silent best-match |
 | Variables/templating | native `{{VAR}}` + fill + context | none | rarely |
 | Works offline | fully | fully | usually not |
-| Agent integration | installed skill teaches agents to use it | none | none/API-key fuss |
-| Backup story | atomic JSONL, byte-equal restore | manual copies | vendor lock-in |
-| Privacy | everything local, single SQLite file | local | cloud-hosted |
+| Agent integration | skill teaches agents to self-serve | none | API-key fuss |
+| Backup | atomic JSONL, byte-equal restore | manual copies | vendor lock-in |
+| Privacy | local SQLite file | local | cloud-hosted |
 
 ---
 
