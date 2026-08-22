@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, named_params, params};
+use rusqlite::{Connection, params};
 
 use super::schema::run_migrations;
 use crate::model::{Prompt, PromptSummary, PromptVariable, VariableType};
@@ -181,10 +181,14 @@ impl Database {
     ) -> Result<Vec<Prompt>> {
         let mut conditions: Vec<&str> = Vec::new();
         if category.is_some() {
-            conditions.push("p.category = ?cat");
+            conditions.push("p.category = ?1");
         }
         if tag.is_some() {
-            conditions.push("p.id IN (SELECT prompt_id FROM prompt_tags WHERE tag = ?tag)");
+            if category.is_some() {
+                conditions.push("p.id IN (SELECT prompt_id FROM prompt_tags WHERE tag = ?2)");
+            } else {
+                conditions.push("p.id IN (SELECT prompt_id FROM prompt_tags WHERE tag = ?1)");
+            }
         }
         if featured_only {
             conditions.push("p.featured = 1");
@@ -202,23 +206,27 @@ impl Database {
         );
         let cat = category.map(str::to_string);
         let tagv = tag.map(str::to_string);
+        // rusqlite named-parameter binding requires the parameter to appear
+        // in the SQL text; when a filter is absent its name never occurs, so
+        // we fall back to positional binding via a tiny wrapper.
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_and_then(
-            named_params! {
-                ":cat": cat.as_deref(),
-                ":tag": tagv.as_deref(),
-            },
-            |row| -> anyhow::Result<Prompt> {
-                let mut p = map_prompt_row(row)?;
-                self.load_children(&mut p)?;
-                Ok(p)
-            },
-        )?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
+        let rows: Vec<Prompt> = if cat.is_some() && tagv.is_some() {
+            stmt.query_and_then(
+                rusqlite::params![cat.as_deref(), tagv.as_deref()],
+                Self::map_prompt_with_children(self),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+        } else if let Some(c) = cat.as_deref() {
+            stmt.query_and_then(rusqlite::params![c], Self::map_prompt_with_children(self))?
+                .collect::<Result<Vec<_>, _>>()?
+        } else if let Some(t) = tagv.as_deref() {
+            stmt.query_and_then(rusqlite::params![t], Self::map_prompt_with_children(self))?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_and_then([], Self::map_prompt_with_children(self))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(rows)
     }
 
     /// Summaries only (no children) — cheap listing for `pst list`.
@@ -232,6 +240,7 @@ impl Database {
             let tags_blob: String = row.get(5)?;
             Ok(PromptSummary {
                 id: row.get(0)?,
+
                 title: row.get(1)?,
                 description: row.get(2)?,
                 category: row.get(3)?,
@@ -248,6 +257,17 @@ impl Database {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// Closure factory: hydrate a Prompt row plus its tags/variables.
+    fn map_prompt_with_children(
+        db: &Database,
+    ) -> impl Fn(&rusqlite::Row<'_>) -> anyhow::Result<Prompt> + '_ {
+        move |row| {
+            let mut p = map_prompt_row(row)?;
+            db.load_children(&mut p)?;
+            Ok(p)
+        }
     }
 
     // ------------------------------------------------------------------
@@ -394,11 +414,14 @@ impl Database {
     // Delete + usage tracking
     // ------------------------------------------------------------------
 
-    /// Delete a prompt and all dependents (FK cascade handles tags/vars/FTS row).
+    /// Delete a prompt plus its FTS row atomically. FK cascade removes
+    /// tags/variables/aliases; FTS5 virtual tables have no FK support, so
+    /// the index row is removed in the same transaction.
     pub fn delete_prompt(&self, id: &str) -> Result<bool> {
-        let n = self
-            .conn
-            .execute("DELETE FROM prompts WHERE id = ?1", params![id])?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM prompts_fts WHERE id = ?1", params![id])?;
+        let n = tx.execute("DELETE FROM prompts WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(n > 0)
     }
 
