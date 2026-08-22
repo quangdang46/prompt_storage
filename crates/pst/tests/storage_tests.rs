@@ -58,7 +58,7 @@ fn upsert_is_update_not_duplicate() {
 #[test]
 fn upsert_preserves_use_count_across_updates() {
     let db = Database::in_memory().unwrap();
-    let mut p = sample_prompt("demo");
+    let p = sample_prompt("demo");
     db.upsert_prompt(&p).unwrap();
     db.bump_usage("demo").unwrap();
     db.bump_usage("demo").unwrap();
