@@ -33,29 +33,42 @@ pub const ADAPTERS: &[AgentAdapter] = &[
     },
 ];
 
-/// Resolve the install root: explicit flag wins; otherwise walk up from cwd
-/// looking for `.git`; fall back to $HOME.
+/// Resolve the install root.
+/// - `--project`: walk up from cwd looking for `.git` or `.agents` (repo
+///   root), like auto-detect — running from a subdirectory must not
+///   install the skill into the subdir. Falls back to cwd.
+/// - `--personal`: $HOME (PST_HOME-aware).
+/// - default: walk up for `.git`, then `.agents`, else $HOME.
 pub fn resolve_root(project: bool, personal: bool) -> PathBuf {
-    if project {
-        return std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    }
     if personal {
         return dirs_home();
     }
-    // Auto-detect: walk up for .git
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut probe = cwd.clone();
-        loop {
-            if probe.join(".git").exists() {
-                return probe;
-            }
-            match probe.parent() {
-                Some(p) => probe = p.to_path_buf(),
-                None => break,
-            }
+    if project {
+        if let Some(root) = find_project_root() {
+            return root;
         }
+        return std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    }
+    // Auto-detect: walk up for .git, then .agents
+    if let Some(root) = find_project_root() {
+        return root;
     }
     dirs_home()
+}
+
+/// Walk up from cwd looking for `.git` or `.agents`; None at filesystem root.
+fn find_project_root() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut probe = cwd;
+    loop {
+        if probe.join(".git").exists() || probe.join(".agents").exists() {
+            return Some(probe);
+        }
+        match probe.parent() {
+            Some(p) => probe = p.to_path_buf(),
+            None => return None,
+        }
+    }
 }
 
 fn dirs_home() -> PathBuf {
@@ -90,35 +103,40 @@ pub fn install(root: &Path, force: bool) -> Result<InstallReport> {
     // Idempotency: unchanged content → no-op rewrite (but still wire links).
     if !force && skill_file.exists() && same_content(&skill_file, new_hash) {
         // Content identical; ensure links anyway (cheap, idempotent).
-        let mut installed = Vec::new();
-        for adapter in ADAPTERS {
-            if wire_adapter(root, adapter, &canon, &content)? {
-                installed.push(adapter.id);
-            }
-        }
+        // Adapter failures are collected, never fatal (contract).
+        let (installed, skipped) = wire_all_adapters(root, &canon, &content);
         return Ok(InstallReport {
             canonical: skill_file,
             installed,
-            skipped: vec![],
+            skipped,
         });
     }
 
     std::fs::write(&skill_file, &content)
         .with_context(|| format!("writing {}", skill_file.display()))?;
 
-    let mut installed = Vec::new();
-    for adapter in ADAPTERS {
-        if wire_adapter(root, adapter, &canon, &content)? {
-            installed.push(adapter.id);
-        } else {
-            // reported as skipped below by caller if needed
-        }
-    }
+    let (installed, skipped) = wire_all_adapters(root, &canon, &content);
     Ok(InstallReport {
         canonical: skill_file,
         installed,
-        skipped: vec![],
+        skipped,
     })
+}
+
+/// Wire every adapter; failures land in `skipped` — NEVER abort the
+/// install (documented contract: "adapter failures are reported, never
+/// fatal").
+fn wire_all_adapters(root: &Path, canon: &Path, content: &str) -> (Vec<&'static str>, Vec<String>) {
+    let mut installed = Vec::new();
+    let mut skipped = Vec::new();
+    for adapter in ADAPTERS {
+        match wire_adapter(root, adapter, canon, content) {
+            Ok(true) => installed.push(adapter.id),
+            Ok(false) => {}
+            Err(e) => skipped.push(format!("{}: {}", adapter.id, e)),
+        }
+    }
+    (installed, skipped)
 }
 
 /// Compare file on disk to fresh hash.
@@ -226,13 +244,39 @@ fn owned_link(link: &Path, canon: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn owned_copy(file: &Path, content: &str) -> bool {
-    std::fs::read_to_string(file)
-        .map(|existing| existing == content)
-        .unwrap_or(false)
+/// Expected file set inside an adapter skill dir installed by COPY mode:
+/// exactly one SKILL.md whose bytes equal the generated skill.
+fn owned_copy_dir(dir: &Path, content: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut saw_skill = false;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        if name == "SKILL.md" {
+            saw_skill = true;
+            let Ok(text) = std::fs::read_to_string(e.path()) else {
+                return false;
+            };
+            if text != content {
+                return false; // user-edited copy — not ours to delete
+            }
+        } else {
+            return false; // user-added file inside the skill dir — keep it
+        }
+    }
+    saw_skill
 }
 
-/// Uninstall: remove ONLY pst-owned artifacts. Never touches the DB.
+/// Remove `dir` only if it is now empty; never fails, never recursive.
+fn prune_empty_dir(dir: &Path) {
+    let _ = std::fs::remove_dir(dir); // fails harmlessly when non-empty
+}
+
+/// Uninstall: remove ONLY pst-owned artifacts. Never touches the DB and
+/// never deletes user data: a copied skill dir is removed only when its
+/// contents are EXACTLY the expected SKILL.md; the canonical dir is
+/// removed only when its SKILL.md still matches generated content.
 pub fn uninstall(root: &Path) -> Result<usize> {
     let content = generate_skill_md();
     let canon = canonical_dir(root);
@@ -241,17 +285,50 @@ pub fn uninstall(root: &Path) -> Result<usize> {
     for adapter in ADAPTERS {
         let link = root.join(adapter.dir).join(SKILL_NAME);
         if link.is_symlink() && owned_link(&link, &canon) {
+            let parent = link.parent().map(Path::to_path_buf);
             let _ = std::fs::remove_file(&link);
             removed += 1;
-        } else if link.join("SKILL.md").is_file() && owned_copy(&link.join("SKILL.md"), &content) {
+            // Prune the (now possibly empty) skill container dirs we made.
+            if let Some(p) = parent {
+                prune_empty_dir(&p);
+                if let Some(gp) = p.parent() {
+                    prune_empty_dir(gp);
+                }
+            }
+        } else if link.is_dir() && owned_copy_dir(&link, &content) {
+            let parent = link.parent().map(Path::to_path_buf);
             let _ = std::fs::remove_dir_all(&link);
             removed += 1;
+            if let Some(p) = parent {
+                prune_empty_dir(&p);
+                if let Some(gp) = p.parent() {
+                    prune_empty_dir(gp);
+                }
+            }
         }
+        // Anything else (user files, foreign content) is left untouched.
     }
 
-    if canon.exists() {
-        std::fs::remove_dir_all(&canon).with_context(|| format!("removing {}", canon.display()))?;
-        removed += 1;
+    // Canonical dir: remove only when it contains EXACTLY our generated
+    // SKILL.md and nothing else. Anything more (user edits, extra files)
+    // is user data and stays.
+    let canon_skill = canon.join("SKILL.md");
+    if canon.is_dir() {
+        let exact_set = std::fs::read_dir(&canon)
+            .map(|entries| {
+                let names: Vec<_> = entries.flatten().map(|e| e.file_name()).collect();
+                names.len() == 1 && names[0] == "SKILL.md"
+            })
+            .unwrap_or(false);
+        let owned = std::fs::read_to_string(&canon_skill)
+            .map(|t| t == content)
+            .unwrap_or(false);
+        if exact_set && owned {
+            std::fs::remove_dir_all(&canon)
+                .with_context(|| format!("removing {}", canon.display()))?;
+            removed += 1;
+        }
+        // Otherwise the canonical dir holds user data — keep it.
     }
     Ok(removed)
 }
