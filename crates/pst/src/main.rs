@@ -364,6 +364,12 @@ fn main() -> std::process::ExitCode {
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => {
+            // Downgrade guard: a DB written by a newer pst must surface the
+            // pinned contract payload, not a generic internal error.
+            if let Some(me) = e.downcast_ref::<pst::storage::schema::MigrationError>() {
+                eprintln!("{}", me.to_contract_json());
+                return std::process::ExitCode::from(1);
+            }
             let code = emit_error(serde_json::json!({
                 "error": "database_error",
                 "message": e.to_string(),
