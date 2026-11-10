@@ -355,6 +355,7 @@ impl Database {
     /// and must be unique among aliases (NOCASE). Check-and-insert share
     /// one transaction → race-free under WAL single-writer.
     pub fn add_alias(&self, alias: &str, prompt_id: &str) -> Result<()> {
+        validate_alias_shape(alias)?;
         let tx = self.conn.unchecked_transaction()?;
         let id_hit: bool = tx
             .query_row(
@@ -406,14 +407,15 @@ impl Database {
     }
 
     pub fn lookup_alias(&self, alias: &str) -> Result<Option<String>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT prompt_id FROM aliases WHERE alias = ?1",
-                params![alias],
-                |r| r.get(0),
-            )
-            .ok())
+        match self.conn.query_row(
+            "SELECT prompt_id FROM aliases WHERE alias = ?1",
+            params![alias],
+            |r| r.get(0),
+        ) {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn aliases_for(&self, prompt_id: &str) -> Result<Vec<String>> {
@@ -453,12 +455,15 @@ impl Database {
     // ------------------------------------------------------------------
 
     pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
-        Ok(self
+        match self
             .conn
             .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
                 r.get(0)
-            })
-            .ok())
+            }) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
@@ -503,9 +508,24 @@ impl Database {
     }
 }
 
+/// Alias shape rules shared by `add_alias` and JSONL import:
+/// non-empty, ≤128 chars, no control characters.
+pub(crate) fn validate_alias_shape(alias: &str) -> Result<()> {
+    if alias.trim().is_empty() {
+        anyhow::bail!("empty_alias");
+    }
+    if alias.chars().count() > 128 {
+        anyhow::bail!("alias_too_long");
+    }
+    if alias.chars().any(|c| c.is_control()) {
+        anyhow::bail!("alias_control_chars");
+    }
+    Ok(())
+}
+
 /// Keep the FTS index in sync for one prompt id (delete + insert).
-/// Shared by upsert and doctor --fix rebuild.
-fn fts_sync(
+/// Shared by upsert, JSONL import and doctor --fix rebuild.
+pub(crate) fn fts_sync(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
     title: &str,

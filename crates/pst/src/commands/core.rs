@@ -72,6 +72,19 @@ pub fn cmd_new(db: &Database, args: NewArgs<'_>) -> Result<i32> {
         .emit());
     }
 
+    // Alias-namespace check: a canonical id equal (NOCASE) to an existing
+    // alias would shadow that alias forever — exact-id resolution always
+    // wins over ALIAS. `alias` already rejects the reverse direction.
+    if db.lookup_alias(id)?.is_some() {
+        return Ok(CmdError {
+            code: "alias_conflict",
+            message: format!("id '{id}' collides with an existing alias"),
+            extra: vec![],
+            exit: 1,
+        }
+        .emit());
+    }
+
     // Content source resolution.
     let content = match args.from.as_deref() {
         Some("-") => {
@@ -389,25 +402,5 @@ fn err_forward(other: crate::storage::resolve::ResolveOutcome) -> Result<i32> {
     }
 }
 
-/// Canonical id check: ^[a-z][a-z0-9]*(-[a-z0-9]+)*$
-pub fn is_canonical_id(id: &str) -> bool {
-    let mut chars = id.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_lowercase() => {}
-        _ => return false,
-    }
-    let mut prev_hyphen = false;
-    for c in chars {
-        match c {
-            '-' => {
-                if prev_hyphen {
-                    return false;
-                }
-                prev_hyphen = true;
-            }
-            c if c.is_ascii_lowercase() || c.is_ascii_digit() => prev_hyphen = false,
-            _ => return false,
-        }
-    }
-    !prev_hyphen
-}
+/// Canonical id validation lives in the model so storage/import share it.
+pub use crate::model::is_canonical_id;

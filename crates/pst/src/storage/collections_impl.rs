@@ -31,14 +31,12 @@ impl Database {
     }
 
     pub fn collection_exists(&self, name: &str) -> Result<bool> {
-        Ok(self
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM collections WHERE name = ?1",
-                params![name],
-                |r| r.get(0),
-            )
-            .unwrap_or(false))
+        let n: i64 = self.conn().query_row(
+            "SELECT COUNT(*) FROM collections WHERE name = ?1",
+            params![name],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
     }
 
     /// Add members in one tx; duplicate adds are no-ops; the FIRST unknown
@@ -81,21 +79,22 @@ impl Database {
     }
 
     pub fn collection_detail(&self, name: &str) -> Result<Option<CollectionDetail>> {
-        let row = self
-            .conn()
-            .query_row(
-                "SELECT name, description, created_at FROM collections WHERE name = ?1",
-                params![name],
-                |r| {
-                    Ok(CollectionDetail {
-                        name: r.get(0)?,
-                        description: r.get(1)?,
-                        created_at: r.get(2)?,
-                        prompts: Vec::new(),
-                    })
-                },
-            )
-            .ok();
+        let row = match self.conn().query_row(
+            "SELECT name, description, created_at FROM collections WHERE name = ?1",
+            params![name],
+            |r| {
+                Ok(CollectionDetail {
+                    name: r.get(0)?,
+                    description: r.get(1)?,
+                    created_at: r.get(2)?,
+                    prompts: Vec::new(),
+                })
+            },
+        ) {
+            Ok(d) => Some(d),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
         let Some(mut detail) = row else {
             return Ok(None);
         };

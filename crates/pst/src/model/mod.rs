@@ -146,6 +146,30 @@ impl From<&Prompt> for PromptSummary {
     }
 }
 
+/// Canonical id check: ^[a-z][a-z0-9]*(-[a-z0-9]+)*$
+/// Shared by `new` and JSONL import so both enforce identical rules.
+pub fn is_canonical_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    let mut prev_hyphen = false;
+    for c in chars {
+        match c {
+            '-' => {
+                if prev_hyphen {
+                    return false;
+                }
+                prev_hyphen = true;
+            }
+            c if c.is_ascii_lowercase() || c.is_ascii_digit() => prev_hyphen = false,
+            _ => return false,
+        }
+    }
+    !prev_hyphen
+}
+
 /// A named collection of prompts.
 #[derive(Debug, Clone, Serialize)]
 pub struct Collection {

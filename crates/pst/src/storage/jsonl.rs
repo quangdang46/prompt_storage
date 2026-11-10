@@ -153,11 +153,13 @@ pub fn import_jsonl(db: &Database, path: &Path, mode: ImportMode) -> Result<usiz
         if trimmed.is_empty() {
             continue;
         }
-        // Only treat the FIRST non-empty line as metadata when it has "_meta".
+        // Only treat the FIRST non-empty line as metadata when it has "_meta"
+        // and is NOT itself a prompt line (a prompt with a stray top-level
+        // "_meta" key must not be silently dropped).
         if !saw_meta {
             saw_meta = true;
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if v.get("_meta").is_some() {
+                if v.get("_meta").is_some() && v.get("id").is_none() {
                     let meta: JsonlMeta = serde_json::from_value(v)
                         .with_context(|| format!("parsing _meta at line {line_no}"))?;
                     if meta.meta.schema_version > LATEST_SCHEMA_VERSION {
@@ -178,10 +180,17 @@ pub fn import_jsonl(db: &Database, path: &Path, mode: ImportMode) -> Result<usiz
     }
 
     // Parse all prompt lines up-front so Replace never wipes on a bad file.
+    // Every line is validated with the SAME rules `pst new` enforces:
+    // canonical kebab-case id and no NUL bytes in stored text.
     let mut parsed = Vec::with_capacity(lines.len());
     for (line_no, text) in &lines {
         let pl: PromptLine = serde_json::from_str(text)
             .with_context(|| format!("parsing prompt at line {line_no}"))?;
+        validate_imported_prompt(&pl.prompt)
+            .with_context(|| format!("invalid prompt at line {line_no}"))?;
+        for alias in &pl.aliases {
+            validate_alias(alias).with_context(|| format!("invalid alias at line {line_no}"))?;
+        }
         parsed.push(pl);
     }
 
@@ -192,13 +201,32 @@ pub fn import_jsonl(db: &Database, path: &Path, mode: ImportMode) -> Result<usiz
 fn apply(db: &Database, mode: ImportMode, items: &[PromptLine]) -> Result<()> {
     match mode {
         ImportMode::Merge => {
+            // ONE transaction: a mid-file failure (alias conflict, shadowed
+            // id) must not leave a half-imported library behind.
+            let tx = db.conn().unchecked_transaction()?;
             for pl in items {
-                db.upsert_prompt(&pl.prompt)?;
+                // A new canonical id that equals an existing alias would
+                // silently shadow that alias forever (exact-id wins in
+                // resolve). Reject instead — same rule `new` enforces.
+                let shadowed: Option<String> = tx
+                    .query_row(
+                        "SELECT prompt_id FROM aliases WHERE alias = ?1",
+                        rusqlite::params![pl.prompt.id],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if shadowed.is_some() {
+                    anyhow::bail!(
+                        "alias_conflict: id '{}' collides with an existing alias",
+                        pl.prompt.id
+                    );
+                }
+                upsert_prompt_in_tx(&tx, &pl.prompt)?;
                 for alias in &pl.aliases {
-                    // Alias conflicts during merge are surfaced, not swallowed.
-                    db.add_alias(alias, &pl.prompt.id)?;
+                    insert_alias_checked(&tx, alias, &pl.prompt.id)?;
                 }
             }
+            tx.commit()?;
             db.set_meta("data_version", &Utc::now().to_rfc3339())?;
         }
         ImportMode::Replace => {
@@ -218,19 +246,180 @@ fn apply(db: &Database, mode: ImportMode, items: &[PromptLine]) -> Result<()> {
                 "#,
             )?;
 
+            // Pass 1: all prompts. Pass 2: aliases through the SAME
+            // validation add_alias enforces (the old raw INSERT bypassed
+            // id_conflict/alias_conflict checks entirely).
             for pl in items {
                 insert_prompt_in_tx(&tx, &pl.prompt)?;
+            }
+            for pl in items {
                 for alias in &pl.aliases {
-                    tx.execute(
-                        "INSERT INTO aliases (alias, prompt_id) VALUES (?1, ?2)",
-                        rusqlite::params![alias, pl.prompt.id],
-                    )?;
+                    insert_alias_checked(&tx, alias, &pl.prompt.id)?;
                 }
             }
             tx.commit()?;
             db.set_meta("data_version", &Utc::now().to_rfc3339())?;
         }
     }
+    Ok(())
+}
+
+/// Import-side validation: identical id rules to `pst new`, plus a ban on
+/// NUL bytes in any stored text field (they corrupt JSONL round-trips).
+fn validate_imported_prompt(p: &Prompt) -> Result<()> {
+    if !crate::model::is_canonical_id(&p.id) {
+        anyhow::bail!("invalid_id: '{}'", p.id);
+    }
+    for (field, value) in [
+        ("title", p.title.as_str()),
+        ("content", p.content.as_str()),
+        ("description", p.description.as_deref().unwrap_or("")),
+        ("category", p.category.as_deref().unwrap_or("")),
+    ] {
+        if value.contains('\0') {
+            anyhow::bail!("invalid_content: NUL byte in {field}");
+        }
+    }
+    Ok(())
+}
+
+/// Alias shape rules — shared implementation lives in database.rs.
+fn validate_alias(alias: &str) -> Result<()> {
+    super::database::validate_alias_shape(alias)
+}
+
+/// Insert-or-update a prompt inside an existing transaction — mirrors
+/// `Database::upsert_prompt` exactly (same SQL, same tag/var/FTS handling).
+fn upsert_prompt_in_tx(tx: &rusqlite::Transaction<'_>, prompt: &Prompt) -> Result<()> {
+    let tags_text = prompt.tags.join(" ");
+    tx.execute(
+        r#"
+        INSERT INTO prompts (id, title, content, description, category, tags_text,
+                             version, author, difficulty, featured, source,
+                             use_count, last_used_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                CASE WHEN ?12 > 0 THEN ?12
+                     ELSE COALESCE((SELECT use_count FROM prompts WHERE id = ?1), 0) END,
+                CASE WHEN ?13 IS NOT NULL THEN ?13
+                     ELSE (SELECT last_used_at FROM prompts WHERE id = ?1) END)
+        ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title,
+            content = excluded.content,
+            description = excluded.description,
+            category = excluded.category,
+            tags_text = excluded.tags_text,
+            version = excluded.version,
+            author = excluded.author,
+            difficulty = excluded.difficulty,
+            featured = excluded.featured,
+            source = excluded.source,
+            updated_at = datetime('now')
+        "#,
+        rusqlite::params![
+            prompt.id,
+            prompt.title,
+            prompt.content,
+            prompt.description,
+            prompt.category,
+            tags_text,
+            prompt.version,
+            prompt.author,
+            prompt.difficulty,
+            prompt.featured as i32,
+            prompt.source,
+            prompt.use_count,
+            prompt.last_used_at,
+        ],
+    )
+    .context("upserting prompt row")?;
+
+    tx.execute(
+        "DELETE FROM prompt_tags WHERE prompt_id = ?1",
+        rusqlite::params![prompt.id],
+    )?;
+    for tag in &prompt.tags {
+        tx.execute(
+            "INSERT INTO prompt_tags (prompt_id, tag) VALUES (?1, ?2)",
+            rusqlite::params![prompt.id, tag],
+        )?;
+    }
+
+    tx.execute(
+        "DELETE FROM prompt_variables WHERE prompt_id = ?1",
+        rusqlite::params![prompt.id],
+    )?;
+    for var in &prompt.variables {
+        tx.execute(
+            r#"INSERT INTO prompt_variables (prompt_id, name, var_type, required, description, default_value)
+               VALUES (?1,?2,?3,?4,?5,?6)"#,
+            rusqlite::params![
+                prompt.id,
+                var.name,
+                var.var_type.as_str(),
+                var.required as i32,
+                var.description,
+                var.default,
+            ],
+        )?;
+    }
+
+    super::database::fts_sync(
+        tx,
+        &prompt.id,
+        &prompt.title,
+        &prompt.description,
+        &prompt.content,
+        &tags_text,
+    )?;
+    Ok(())
+}
+
+/// Alias insert with the SAME collision rules as `Database::add_alias`,
+/// runnable inside an existing transaction (replace-mode import).
+/// Error strings match add_alias: id_conflict / alias_conflict / not_found.
+fn insert_alias_checked(
+    tx: &rusqlite::Transaction<'_>,
+    alias: &str,
+    prompt_id: &str,
+) -> Result<()> {
+    validate_alias(alias)?;
+    let id_hit: bool = tx
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1 COLLATE NOCASE",
+            rusqlite::params![alias],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if id_hit {
+        anyhow::bail!("id_conflict");
+    }
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT prompt_id FROM aliases WHERE alias = ?1",
+            rusqlite::params![alias],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(owner) = existing {
+        if owner != prompt_id {
+            anyhow::bail!("alias_conflict");
+        }
+        return Ok(()); // idempotent re-add of same mapping
+    }
+    let target_exists: bool = tx
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1",
+            rusqlite::params![prompt_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !target_exists {
+        anyhow::bail!("not_found");
+    }
+    tx.execute(
+        "INSERT INTO aliases (alias, prompt_id) VALUES (?1, ?2)",
+        rusqlite::params![alias, prompt_id],
+    )?;
     Ok(())
 }
 
