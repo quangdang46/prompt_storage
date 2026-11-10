@@ -50,6 +50,10 @@ pub struct PromptVariable {
     pub description: Option<String>,
     #[serde(default)]
     pub default: Option<String>,
+    /// Allowed values for `select` variables (empty = unconstrained).
+    /// Persisted as a JSON array in prompt_variables.options_text.
+    #[serde(default)]
+    pub options: Vec<String>,
 }
 
 /// The core prompt record.

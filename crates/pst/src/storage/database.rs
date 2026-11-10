@@ -128,9 +128,14 @@ impl Database {
             params![prompt.id],
         )?;
         for var in &prompt.variables {
+            let options_json = if var.options.is_empty() {
+                String::new()
+            } else {
+                serde_json::to_string(&var.options).unwrap_or_default()
+            };
             tx.execute(
-                r#"INSERT INTO prompt_variables (prompt_id, name, var_type, required, description, default_value)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                r#"INSERT INTO prompt_variables (prompt_id, name, var_type, required, description, default_value, options_text)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
                 params![
                     prompt.id,
                     var.name,
@@ -138,6 +143,7 @@ impl Database {
                     var.required as i32,
                     var.description,
                     var.default,
+                    options_json,
                 ],
             )?;
         }
@@ -462,17 +468,24 @@ impl Database {
         };
         prompt.variables = {
             let mut stmt = self.conn.prepare(
-                "SELECT name, var_type, required, description, default_value
+                "SELECT name, var_type, required, description, default_value, options_text
                  FROM prompt_variables WHERE prompt_id = ?1 ORDER BY name",
             )?;
             let rows = stmt.query_map(params![prompt.id], |r| {
                 let vt: String = r.get(1)?;
+                let options_text: String = r.get(5)?;
+                let options: Vec<String> = if options_text.is_empty() {
+                    Vec::new()
+                } else {
+                    serde_json::from_str(&options_text).unwrap_or_default()
+                };
                 Ok(PromptVariable {
                     name: r.get(0)?,
                     var_type: VariableType::from_str_opt(&vt).unwrap_or_default(),
                     required: r.get::<_, i32>(2)? != 0,
                     description: r.get(3)?,
                     default: r.get(4)?,
+                    options,
                 })
             })?;
             collect(rows)?

@@ -349,9 +349,14 @@ fn upsert_prompt_in_tx(tx: &rusqlite::Transaction<'_>, prompt: &Prompt) -> Resul
         rusqlite::params![prompt.id],
     )?;
     for var in &prompt.variables {
+        let options_json = if var.options.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&var.options).unwrap_or_default()
+        };
         tx.execute(
-            r#"INSERT INTO prompt_variables (prompt_id, name, var_type, required, description, default_value)
-               VALUES (?1,?2,?3,?4,?5,?6)"#,
+            r#"INSERT INTO prompt_variables (prompt_id, name, var_type, required, description, default_value, options_text)
+               VALUES (?1,?2,?3,?4,?5,?6,?7)"#,
             rusqlite::params![
                 prompt.id,
                 var.name,
@@ -359,6 +364,7 @@ fn upsert_prompt_in_tx(tx: &rusqlite::Transaction<'_>, prompt: &Prompt) -> Resul
                 var.required as i32,
                 var.description,
                 var.default,
+                options_json,
             ],
         )?;
     }
@@ -418,16 +424,22 @@ fn insert_prompt_in_tx(tx: &rusqlite::Transaction<'_>, p: &Prompt) -> Result<()>
         )?;
     }
     for var in &p.variables {
+        let options_json = if var.options.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&var.options).unwrap_or_default()
+        };
         tx.execute(
-            r#"INSERT INTO prompt_variables (prompt_id, name, var_type, required, description, default_value)
-               VALUES (?1,?2,?3,?4,?5,?6)"#,
+            r#"INSERT INTO prompt_variables (prompt_id, name, var_type, required, description, default_value, options_text)
+               VALUES (?1,?2,?3,?4,?5,?6,?7)"#,
             rusqlite::params![
                 p.id,
                 var.name,
                 var.var_type.as_str(),
                 var.required as i32,
                 var.description,
-                var.default
+                var.default,
+                options_json
             ],
         )?;
     }

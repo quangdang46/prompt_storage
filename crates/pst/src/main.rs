@@ -64,7 +64,8 @@ enum Sub {
         /// Content source: FILE path or `-` for stdin
         #[arg(long, short = 'f')]
         from: Option<String>,
-        /// Declare variable: --var NAME=type[=DEFAULT]
+        /// Declare variable: NAME=type[=DEFAULT]; NAME! = required;
+        /// select options: NAME=select=DEFAULT|OPT1|OPT2
         #[arg(long = "var")]
         var: Vec<String>,
         #[arg(long)]
@@ -185,6 +186,14 @@ enum Sub {
 
     /// Tag counts
     Tags,
+
+    /// Suggest relevant prompts for a task (ranked, with reasons)
+    Suggest {
+        query: String,
+        /// Override config suggest.default_limit
+        #[arg(long, short = 'l')]
+        limit: Option<usize>,
+    },
 
     /// Render prompt with variable substitution
     Render {
@@ -330,6 +339,16 @@ fn main() -> std::process::ExitCode {
     }
     let home = home_dir();
 
+    // Config is loaded once for every command: output.json becomes the
+    // default for --json, suggest.default_limit feeds `pst suggest`, and
+    // output.color/--no-color/NO_COLOR gate human-output styling.
+    let cfg = pst::commands::system::load_config(&home);
+    let as_json = cli.json || cfg.output_json;
+    let color = cfg.output_color
+        && !cli.no_color
+        && std::env::var_os("NO_COLOR").is_none()
+        && atty::is(atty::Stream::Stdout);
+
     // DB-free commands dispatch BEFORE the database is opened: install,
     // uninstall, completion and config must never create/mutate store.db,
     // and must still work when the DB is corrupt or written by a newer
@@ -354,7 +373,7 @@ fn main() -> std::process::ExitCode {
                 action,
                 key.as_deref(),
                 value.as_deref(),
-                cli.json,
+                as_json,
             ));
         }
         _ => {}
@@ -378,7 +397,7 @@ fn main() -> std::process::ExitCode {
     };
 
     let result: Result<i32> = match cli.cmd {
-        Some(Sub::Show { query }) => pst::commands::core::cmd_show(&db, &query, cli.json),
+        Some(Sub::Show { query }) => pst::commands::core::cmd_show(&db, &query, as_json, color),
         Some(Sub::New {
             id,
             title,
@@ -415,13 +434,14 @@ fn main() -> std::process::ExitCode {
             tag.as_deref(),
             featured,
             limit,
-            cli.json,
+            as_json,
+            color,
         ),
         Some(Sub::Render { query, fill }) => {
-            pst::commands::render_cmd(&db, &query, cli.json, &prescan.vars, fill)
+            pst::commands::render_cmd(&db, &query, as_json, &prescan.vars, fill)
         }
         Some(Sub::Copy { query, fill }) => {
-            pst::commands::copy_cmd(&db, &query, fill, cli.json, &prescan.vars)
+            pst::commands::copy_cmd(&db, &query, fill, as_json, &prescan.vars)
         }
         Some(Sub::Export {
             ids,
@@ -429,7 +449,7 @@ fn main() -> std::process::ExitCode {
             format,
             out,
             stdout,
-        }) => pst::commands::export_cmd(&db, &ids, all, &format, out.as_deref(), stdout, cli.json),
+        }) => pst::commands::export_cmd(&db, &ids, all, &format, out.as_deref(), stdout, as_json),
         Some(Sub::Import { path, replace, .. }) => {
             let mode = if replace {
                 pst::commands::export::ImportMode::Replace
@@ -440,11 +460,11 @@ fn main() -> std::process::ExitCode {
         }
         Some(Sub::Collection {
             args: ColArgs::Args(a),
-        }) => pst::commands::collections::cmd_collection(&db, &a, cli.json),
-        Some(Sub::Status) => pst::commands::system::cmd_status(&db, &home, cli.json),
-        Some(Sub::Doctor { fix }) => pst::commands::system::cmd_doctor(&db, &home, fix, cli.json),
+        }) => pst::commands::collections::cmd_collection(&db, &a, as_json),
+        Some(Sub::Status) => pst::commands::system::cmd_status(&db, &home, as_json),
+        Some(Sub::Doctor { fix }) => pst::commands::system::cmd_doctor(&db, &home, fix, as_json),
         Some(Sub::Interactive) => {
-            if cli.json {
+            if as_json {
                 eprintln!(
                     "{}",
                     serde_json::json!({"error":"tty_required","hint":"interactive picker needs a terminal"})
@@ -466,10 +486,18 @@ fn main() -> std::process::ExitCode {
             }
         }
         Some(Sub::Search { query, limit }) => {
-            pst::commands::discovery::cmd_search(&db, &query, limit, cli.json)
+            pst::commands::discovery::cmd_search(&db, &query, limit, as_json, color)
         }
-        Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, cli.json),
-        Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),
+        Some(Sub::Suggest { query, limit }) => pst::commands::discovery::cmd_suggest(
+            &db,
+            &query,
+            limit,
+            cfg.suggest_default_limit,
+            as_json,
+            color,
+        ),
+        Some(Sub::Categories) => pst::commands::discovery::cmd_categories(&db, as_json, color),
+        Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, as_json, color),
         // Bare positional words → direct mode.
         None | Some(Sub::Direct(_)) => {
             // Direct mode accepts any bare word(s): join them into one
@@ -477,7 +505,7 @@ fn main() -> std::process::ExitCode {
             let query = match &cli.cmd {
                 // Join bare words into the full query; drop stray flag-like
                 // tokens that external_subcommand may have captured (e.g.
-                // `pst foo --json` puts "--json" in words, not in cli.json).
+                // `pst foo --json` puts "--json" in words, not in as_json).
                 Some(Sub::Direct(words)) if !words.is_empty() => {
                     let q = words
                         .iter()
@@ -490,7 +518,7 @@ fn main() -> std::process::ExitCode {
                 _ => None,
             };
             match query {
-                Some(q) => run_direct(&db, &q, cli.json),
+                Some(q) => run_direct(&db, &q, as_json),
                 None => {
                     let _ = Cli::command().print_help();
                     Ok(0)

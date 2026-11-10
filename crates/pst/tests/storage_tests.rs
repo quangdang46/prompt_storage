@@ -20,6 +20,7 @@ fn sample_prompt(id: &str) -> Prompt {
         required: true,
         description: None,
         default: None,
+        options: Vec::new(),
     }];
     p
 }

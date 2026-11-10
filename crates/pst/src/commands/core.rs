@@ -241,15 +241,40 @@ pub fn cmd_new(db: &Database, args: NewArgs<'_>) -> Result<i32> {
             .emit());
         }
         let type_str = parts.next().unwrap_or("text");
-        let default = parts.next().map(str::to_string);
+        let default_raw = parts.next();
         match crate::model::VariableType::from_str_opt(type_str) {
-            Some(var_type) => prompt.variables.push(crate::model::PromptVariable {
-                name: name.to_string(),
-                var_type,
-                required,
-                description: None,
-                default,
-            }),
+            Some(var_type) => {
+                // select syntax: NAME=select=DEFAULT|OPT1|OPT2|...
+                // The pipe list IS the option set; first entry is the default.
+                let (default, options) = if var_type == crate::model::VariableType::Select {
+                    match default_raw {
+                        Some(d) => {
+                            let segs: Vec<String> = d
+                                .split('|')
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                                .collect();
+                            if segs.is_empty() {
+                                (None, Vec::new())
+                            } else {
+                                let def = segs[0].clone();
+                                (Some(def), segs)
+                            }
+                        }
+                        None => (None, Vec::new()),
+                    }
+                } else {
+                    (default_raw.map(str::to_string), Vec::new())
+                };
+                prompt.variables.push(crate::model::PromptVariable {
+                    name: name.to_string(),
+                    var_type,
+                    required,
+                    description: None,
+                    default,
+                    options,
+                });
+            }
             None => {
                 return Ok(CmdError {
                     code: "invalid_var_type",
@@ -269,7 +294,7 @@ pub fn cmd_new(db: &Database, args: NewArgs<'_>) -> Result<i32> {
 }
 
 /// `pst show <id>` — human-oriented metadata view (never the piped-content path).
-pub fn cmd_show(db: &Database, query: &str, as_json: bool) -> Result<i32> {
+pub fn cmd_show(db: &Database, query: &str, as_json: bool, color: bool) -> Result<i32> {
     let outcome = crate::storage::resolve::resolve(db, query)?;
     match outcome {
         crate::storage::resolve::ResolveOutcome::Hit { id, .. } => {
@@ -279,7 +304,11 @@ pub fn cmd_show(db: &Database, query: &str, as_json: bool) -> Result<i32> {
                 let payload = ShowPayload::from_prompt(&p, &aliases);
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else {
-                println!("{} ({})", p.title, p.id);
+                println!(
+                    "{} ({})",
+                    crate::commands::discovery::bold(&p.title, color),
+                    p.id
+                );
                 if let Some(d) = &p.description {
                     println!("{d}");
                 }
@@ -321,6 +350,8 @@ struct PromptSummaryVar {
     var_type: String,
     required: bool,
     default: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    options: Vec<String>,
 }
 
 impl ShowPayload {
@@ -340,6 +371,7 @@ impl ShowPayload {
                     var_type: v.var_type.as_str().to_string(),
                     required: v.required,
                     default: v.default.clone(),
+                    options: v.options.clone(),
                 })
                 .collect(),
             use_count: p.use_count,

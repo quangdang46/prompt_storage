@@ -139,6 +139,15 @@ pub fn build_values(
     // Explicit wins last; process special types.
     for (name, value) in explicit {
         if let Some(var) = prompt.variables.iter().find(|v| v.name == *name) {
+            if var.var_type == crate::model::VariableType::Select
+                && !var.options.is_empty()
+                && !var.options.iter().any(|o| o == value)
+            {
+                anyhow::bail!(
+                    "invalid_option: --{name}='{value}' not in [{}]",
+                    var.options.join(", ")
+                );
+            }
             let resolved = match var.var_type {
                 crate::model::VariableType::File => read_file_var(value)?,
                 _ => value.clone(),
@@ -257,6 +266,7 @@ mod tests {
             required: false,
             description: None,
             default: None,
+            options: Vec::new(),
         }
     }
 

@@ -7,7 +7,7 @@
 
 use rusqlite::Connection;
 
-pub const LATEST_SCHEMA_VERSION: i32 = 1;
+pub const LATEST_SCHEMA_VERSION: i32 = 2;
 
 /// Ordered, append-only. Entry `i` upgrades version `i-1 -> i`.
 /// NEVER edit an existing entry — add a new one at the end.
@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+"#,
+    // 1 -> 2: select-variable options (JSON array text; '' = unconstrained)
+    r#"
+ALTER TABLE prompt_variables ADD COLUMN options_text TEXT NOT NULL DEFAULT '';
 "#,
 ];
 

@@ -23,6 +23,7 @@ fn rich_prompt(id: &str) -> Prompt {
         required: true,
         description: Some("the code".into()),
         default: Some("fn main() {}".into()),
+        options: Vec::new(),
     }];
     p.use_count = 42;
     p.last_used_at = Some("2026-01-01T00:00:00Z".into());

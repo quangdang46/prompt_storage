@@ -24,5 +24,5 @@ fn newer_schema_emits_schema_too_new_contract() {
         .unwrap_or_else(|e| panic!("stderr must be contract JSON: {e}; raw={stderr:?}"));
     assert_eq!(v["error"], "schema_too_new");
     assert_eq!(v["db_version"], 99);
-    assert_eq!(v["supported"], 1);
+    assert_eq!(v["supported"], pst::storage::schema::LATEST_SCHEMA_VERSION);
 }
