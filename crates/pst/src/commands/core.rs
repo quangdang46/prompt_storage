@@ -295,40 +295,41 @@ impl ShowPayload {
 }
 
 /// `pst rm <id>` — delete with confirm-on-TTY / --force bypass.
+/// Contract: off-TTY (agents/CI) ALWAYS requires --force; on a TTY the
+/// user is prompted. Queries resolve like `show` — an ambiguous or
+/// unknown query reports `ambiguous`/`not_found`, never a misleading
+/// "no prompt".
 pub fn cmd_rm(db: &Database, id: &str, force: bool) -> Result<i32> {
-    // Resolve first so aliases work too.
     let outcome = crate::storage::resolve::resolve(db, id)?;
     let target = match outcome {
-        crate::storage::resolve::ResolveOutcome::Hit { id, source, .. } => {
-            // Exact-id deletion only when explicitly forced or exact source;
-            // alias/prefix hits still resolve to their owner.
-            let _ = source;
-            id
-        }
-        _ => id.to_string(),
+        crate::storage::resolve::ResolveOutcome::Hit { id, .. } => id,
+        other => return err_forward(other),
     };
 
-    let exists = db.get_prompt(&target)?.is_some();
-    if !exists {
-        return Ok(CmdError {
-            code: "not_found",
-            message: format!("no prompt '{target}'"),
-            extra: vec![],
-            exit: 1,
-        }
-        .emit());
-    }
-
-    if !force && atty::is(atty::Stream::Stdin) {
-        eprint!("Delete '{target}'? [y/N] ");
-        use std::io::Write;
-        std::io::stderr().flush()?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        let answer = answer.trim().to_ascii_lowercase();
-        if answer != "y" && answer != "yes" {
-            println!("{}", serde_json::json!({ "deleted": false, "id": target }));
-            return Ok(0);
+    if !force {
+        if atty::is(atty::Stream::Stdin) {
+            eprint!("Delete '{target}'? [y/N] ");
+            use std::io::Write;
+            std::io::stderr().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            let answer = answer.trim().to_ascii_lowercase();
+            if answer != "y" && answer != "yes" {
+                println!("{}", serde_json::json!({ "deleted": false, "id": target }));
+                return Ok(0);
+            }
+        } else {
+            // Destructive op with no way to confirm: refuse rather than
+            // silently deleting on a piped/agent invocation.
+            return Ok(CmdError {
+                code: "confirmation_required",
+                message: format!(
+                    "rm is destructive; pass --force to delete '{target}' non-interactively"
+                ),
+                extra: vec![],
+                exit: 1,
+            }
+            .emit());
         }
     }
 
@@ -337,31 +338,69 @@ pub fn cmd_rm(db: &Database, id: &str, force: bool) -> Result<i32> {
     Ok(0)
 }
 
-/// `pst alias <id> <alias>...`
+/// `pst alias <id> <alias>...` — `<id>` resolves like `show` (exact,
+/// alias, prefix, fuzzy), so `pst alias <existing-alias> newname` works.
+/// The whole batch is atomic: the first failure rolls back all aliases.
 pub fn cmd_alias(db: &Database, id: &str, aliases: &[String]) -> Result<i32> {
-    for alias in aliases {
-        if let Err(e) = db.add_alias(alias, id) {
-            let code = match e.to_string().as_str() {
-                "id_conflict" => "id_conflict",
-                "alias_conflict" => "alias_conflict",
-                "not_found" => "not_found",
-                _ => "alias_error",
-            };
-            return Ok(CmdError {
-                code,
-                message: format!("cannot alias '{alias}' -> '{id}'"),
-                extra: vec![("alias".into(), alias.clone().into())],
-                exit: 1,
-            }
-            .emit());
+    if aliases.is_empty() {
+        return Ok(CmdError {
+            code: "usage",
+            message: "alias requires at least one alias".into(),
+            extra: vec![],
+            exit: 1,
         }
-        println!("{}", serde_json::json!({ "aliased": alias, "to": id }));
+        .emit());
+    }
+    let outcome = crate::storage::resolve::resolve(db, id)?;
+    let target = match outcome {
+        crate::storage::resolve::ResolveOutcome::Hit { id, .. } => id,
+        other => return err_forward(other),
+    };
+
+    let pairs: Vec<(String, String)> = aliases
+        .iter()
+        .map(|a| (a.clone(), target.clone()))
+        .collect();
+    if let Err(e) = db.add_aliases(&pairs) {
+        let msg = e.to_string();
+        let code = if msg.contains("id_conflict") {
+            "id_conflict"
+        } else if msg.contains("alias_conflict") {
+            "alias_conflict"
+        } else if msg.contains("not_found") {
+            "not_found"
+        } else if msg.contains("empty_alias") {
+            "invalid_alias"
+        } else if msg.contains("alias_too_long") || msg.contains("alias_control_chars") {
+            "invalid_alias"
+        } else {
+            "alias_error"
+        };
+        return Ok(CmdError {
+            code,
+            message: format!("cannot alias -> '{target}': {msg}"),
+            extra: vec![],
+            exit: 1,
+        }
+        .emit());
+    }
+    for alias in aliases {
+        println!("{}", serde_json::json!({ "aliased": alias, "to": target }));
     }
     Ok(0)
 }
 
 /// `pst unalias <alias>...`
 pub fn cmd_unalias(db: &Database, aliases: &[String]) -> Result<i32> {
+    if aliases.is_empty() {
+        return Ok(CmdError {
+            code: "usage",
+            message: "unalias requires at least one alias".into(),
+            extra: vec![],
+            exit: 1,
+        }
+        .emit());
+    }
     for alias in aliases {
         let removed = db.remove_alias(alias)?;
         if !removed {

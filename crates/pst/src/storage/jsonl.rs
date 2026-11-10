@@ -376,51 +376,13 @@ fn upsert_prompt_in_tx(tx: &rusqlite::Transaction<'_>, prompt: &Prompt) -> Resul
 
 /// Alias insert with the SAME collision rules as `Database::add_alias`,
 /// runnable inside an existing transaction (replace-mode import).
-/// Error strings match add_alias: id_conflict / alias_conflict / not_found.
+/// Delegates to the shared implementation so rules can never drift.
 fn insert_alias_checked(
     tx: &rusqlite::Transaction<'_>,
     alias: &str,
     prompt_id: &str,
 ) -> Result<()> {
-    validate_alias(alias)?;
-    let id_hit: bool = tx
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1 COLLATE NOCASE",
-            rusqlite::params![alias],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
-    if id_hit {
-        anyhow::bail!("id_conflict");
-    }
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT prompt_id FROM aliases WHERE alias = ?1",
-            rusqlite::params![alias],
-            |r| r.get(0),
-        )
-        .ok();
-    if let Some(owner) = existing {
-        if owner != prompt_id {
-            anyhow::bail!("alias_conflict");
-        }
-        return Ok(()); // idempotent re-add of same mapping
-    }
-    let target_exists: bool = tx
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1",
-            rusqlite::params![prompt_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
-    if !target_exists {
-        anyhow::bail!("not_found");
-    }
-    tx.execute(
-        "INSERT INTO aliases (alias, prompt_id) VALUES (?1, ?2)",
-        rusqlite::params![alias, prompt_id],
-    )?;
-    Ok(())
+    super::database::add_alias_in_tx(tx, alias, prompt_id)
 }
 
 /// Insert a full prompt (row + tags + variables + FTS) inside an existing tx.

@@ -355,46 +355,19 @@ impl Database {
     /// and must be unique among aliases (NOCASE). Check-and-insert share
     /// one transaction → race-free under WAL single-writer.
     pub fn add_alias(&self, alias: &str, prompt_id: &str) -> Result<()> {
-        validate_alias_shape(alias)?;
         let tx = self.conn.unchecked_transaction()?;
-        let id_hit: bool = tx
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1 COLLATE NOCASE",
-                params![alias],
-                |r| r.get(0),
-            )
-            .unwrap_or(false);
-        if id_hit {
-            anyhow::bail!("id_conflict");
+        add_alias_in_tx(&tx, alias, prompt_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Add several aliases atomically: the FIRST failure rolls back every
+    /// earlier alias in the batch (no partial application).
+    pub fn add_aliases(&self, pairs: &[(String, String)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (alias, prompt_id) in pairs {
+            add_alias_in_tx(&tx, alias, prompt_id)?;
         }
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT prompt_id FROM aliases WHERE alias = ?1",
-                params![alias],
-                |r| r.get(0),
-            )
-            .ok();
-        if let Some(owner) = existing {
-            if owner != prompt_id {
-                anyhow::bail!("alias_conflict");
-            } else {
-                return Ok(()); // idempotent re-add of same mapping
-            }
-        }
-        let target_exists: bool = tx
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1",
-                params![prompt_id],
-                |r| r.get(0),
-            )
-            .unwrap_or(false);
-        if !target_exists {
-            anyhow::bail!("not_found");
-        }
-        tx.execute(
-            "INSERT INTO aliases (alias, prompt_id) VALUES (?1, ?2)",
-            params![alias, prompt_id],
-        )?;
         tx.commit()?;
         Ok(())
     }
@@ -506,6 +479,55 @@ impl Database {
         };
         Ok(())
     }
+}
+
+/// Shared alias-insert logic runnable inside an existing transaction.
+/// Error strings are part of the command contract: id_conflict,
+/// alias_conflict, not_found, plus validate_alias_shape failures.
+pub(crate) fn add_alias_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    alias: &str,
+    prompt_id: &str,
+) -> Result<()> {
+    validate_alias_shape(alias)?;
+    let id_hit: bool = tx
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1 COLLATE NOCASE",
+            params![alias],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if id_hit {
+        anyhow::bail!("id_conflict");
+    }
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT prompt_id FROM aliases WHERE alias = ?1",
+            params![alias],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(owner) = existing {
+        if owner != prompt_id {
+            anyhow::bail!("alias_conflict");
+        }
+        return Ok(()); // idempotent re-add of same mapping
+    }
+    let target_exists: bool = tx
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1",
+            params![prompt_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !target_exists {
+        anyhow::bail!("not_found");
+    }
+    tx.execute(
+        "INSERT INTO aliases (alias, prompt_id) VALUES (?1, ?2)",
+        params![alias, prompt_id],
+    )?;
+    Ok(())
 }
 
 /// Alias shape rules shared by `add_alias` and JSONL import:
