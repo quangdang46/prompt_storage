@@ -24,9 +24,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 rusqlite = { workspace = true }
 chrono = { workspace = true }
-directories = { workspace = true }
 toml = { workspace = true }
-rand = { workspace = true }
 atty = { workspace = true }
 sha2 = { workspace = true }
 ratatui = { workspace = true }

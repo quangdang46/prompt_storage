@@ -272,11 +272,19 @@ const DRIFT_SQL_B: &str =
 pub fn cmd_doctor(db: &Database, home: &std::path::Path, fix: bool, as_json: bool) -> Result<i32> {
     let mut checks = Vec::new();
 
-    // 1. DB opens + integrity.
+    // 1. DB opens + integrity (real PRAGMA check, not just "opened").
+    let integrity: String = db
+        .conn()
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    let integrity_ok = integrity.eq_ignore_ascii_case("ok");
     checks.push(Check {
         name: "database_integrity",
-        status: "ok",
-        message: "opened".into(),
+        status: if integrity_ok { "ok" } else { "fail" },
+        message: if integrity_ok {
+            "ok".into()
+        } else {
+            integrity.chars().take(200).collect()
+        },
     });
 
     // 2. Schema version.

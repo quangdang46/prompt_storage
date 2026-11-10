@@ -27,7 +27,8 @@ pub fn cmd_list(
     as_json: bool,
     color: bool,
 ) -> Result<i32> {
-    let prompts = db.list_prompts_filtered(category, tag, featured)?;
+    // Summaries only: no content blobs, no per-row children queries.
+    let prompts = db.list_summaries_filtered(category, tag, featured)?;
     let total = prompts.len();
     let taken: Vec<_> = match limit {
         Some(n) => prompts.into_iter().take(n).collect(),

@@ -17,7 +17,6 @@ use super::database::Database;
 /// Pinned constants (bead polish R1) so tests can assert exact thresholds.
 pub const FUZZY_TOPK: usize = 8;
 pub const FUZZY_DOMINANCE: f64 = 1.40;
-pub const FUZZY_MIN_SCORE: f64 = 0.5;
 pub const PREFIX_CANDIDATE_CAP: usize = 10;
 
 /// Where a resolution came from.
@@ -192,15 +191,18 @@ fn candidates_from_hits(
 /// Collect prefix matches over canonical ids and aliases.
 /// Aliases resolve to their owning prompt. Sorted use_count DESC then alpha.
 fn collect_prefix_candidates(db: &Database, prefix: &str) -> Result<Vec<Candidate>> {
-    let pattern = format!("{}%", prefix.replace(['%', '_'], ""));
+    // LIKE-escape so '_' and '%' inside ids/aliases are literal, not
+    // wildcards — otherwise an alias like "my_alias" could never be found
+    // by prefix (and "a_c" would over-match "abc").
+    let pattern = format!("{}%", escape_like(prefix));
     let mut stmt = db.conn().prepare(
         r#"
         SELECT DISTINCT p.id, p.title, p.use_count FROM prompts p
-        WHERE p.id LIKE ?1
+        WHERE p.id LIKE ?1 ESCAPE '\'
         UNION ALL
         SELECT DISTINCT p.id, p.title, p.use_count FROM aliases a
         JOIN prompts p ON p.id = a.prompt_id
-        WHERE a.alias LIKE ?1
+        WHERE a.alias LIKE ?1 ESCAPE '\'
         "#,
     )?;
     let rows = stmt.query_map(rusqlite::params![pattern], |row| {
@@ -234,6 +236,13 @@ fn collect_prefix_candidates(db: &Database, prefix: &str) -> Result<Vec<Candidat
             source: "prefix",
         })
         .collect())
+}
+
+/// Escape LIKE metacharacters for `ESCAPE '\'` clauses.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[cfg(test)]

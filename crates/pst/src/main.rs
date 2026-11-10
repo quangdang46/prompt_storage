@@ -217,7 +217,8 @@ enum Sub {
 }
 
 fn emit_error(payload: serde_json::Value) -> i32 {
-    println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+    // Errors go to stderr — stdout is reserved for data payloads (§6).
+    eprintln!("{}", serde_json::to_string(&payload).unwrap_or_default());
     1
 }
 
@@ -231,7 +232,14 @@ fn run_direct(db: &Database, query: &str, as_json: bool) -> Result<i32> {
             ..
         } => {
             if as_json {
-                let prompt = db.get_prompt(&content.id)?.expect("resolved exists");
+                // Re-fetch by resolved id; a vanished row is not_found, not a panic.
+                let Some(prompt) = db.get_prompt(&content.id)? else {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({ "error": "not_found", "query": query })
+                    );
+                    return Ok(1);
+                };
                 let payload = serde_json::json!({
                     "id": prompt.id,
                     "title": prompt.title,
@@ -464,7 +472,9 @@ fn main() -> std::process::ExitCode {
         Some(Sub::Status) => pst::commands::system::cmd_status(&db, &home, as_json),
         Some(Sub::Doctor { fix }) => pst::commands::system::cmd_doctor(&db, &home, fix, as_json),
         Some(Sub::Interactive) => {
-            if as_json {
+            // TTY gate applies regardless of --json: run_tui needs a real
+            // terminal and must never surface as 'internal'.
+            if !atty::is(atty::Stream::Stdin) || !atty::is(atty::Stream::Stdout) {
                 eprintln!(
                     "{}",
                     serde_json::json!({"error":"tty_required","hint":"interactive picker needs a terminal"})

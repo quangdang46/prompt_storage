@@ -32,7 +32,6 @@ struct App<'a> {
     query: String,
     filtered: Vec<usize>,
     selected: usize,
-    preview: Option<String>,
     status: Option<String>,
     done: bool,
 }
@@ -44,7 +43,6 @@ impl<'a> App<'a> {
             query: String::new(),
             filtered: (0..prompts.len()).collect(),
             selected: 0,
-            preview: None,
             status: None,
             done: false,
         };
@@ -115,12 +113,8 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         .status
         .clone()
         .or_else(|| {
-            app.current().map(|p| {
-                format!(
-                    "{} — Enter: copy · p: print · o: preview · Esc: clear · q: quit",
-                    p.id
-                )
-            })
+            app.current()
+                .map(|p| format!("{} — Enter: copy · p: print · Esc: clear · q: quit", p.id))
         })
         .unwrap_or_default();
     f.render_widget(Paragraph::new(status), chunks[2]);
@@ -186,17 +180,14 @@ pub fn run_tui(db: &crate::storage::database::Database) -> Result<TuiAction> {
                 KeyCode::Down => {
                     if app.selected + 1 < app.filtered.len() {
                         app.selected += 1;
-                        app.preview = None;
                     }
                 }
                 KeyCode::Up => {
                     app.selected = app.selected.saturating_sub(1);
-                    app.preview = None;
                 }
                 KeyCode::Esc => {
                     app.query.clear();
                     app.refilter();
-                    app.preview = None;
                 }
                 KeyCode::Enter => {
                     if let Some(p) = app.current() {

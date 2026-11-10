@@ -105,11 +105,7 @@ pub fn export_jsonl_to<W: Write>(db: &Database, prompts: &[Prompt], w: &mut W) -
 fn write_jsonl(db: &Database, prompts: &[Prompt], w: &mut impl Write) -> Result<()> {
     let meta = JsonlMeta {
         meta: MetaInfo {
-            version: db
-                .get_meta("data_version")
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| "0".into()),
+            version: db.get_meta("data_version")?.unwrap_or_else(|| "0".into()),
             count: prompts.len(),
             exported_at: Utc::now().to_rfc3339(),
             schema_version: LATEST_SCHEMA_VERSION,
@@ -118,10 +114,14 @@ fn write_jsonl(db: &Database, prompts: &[Prompt], w: &mut impl Write) -> Result<
     serde_json::to_writer(&mut *w, &meta)?;
     writeln!(w)?;
 
+    // One batch query for all aliases instead of N+1 lookups.
+    let ids: Vec<String> = prompts.iter().map(|p| p.id.clone()).collect();
+    let alias_map = db.aliases_for_many(&ids)?;
+
     for p in prompts {
         let line = PromptLine {
             prompt: p.clone(),
-            aliases: db.aliases_for(&p.id)?,
+            aliases: alias_map.get(&p.id).cloned().unwrap_or_default(),
         };
         serde_json::to_writer(&mut *w, &line)?;
         writeln!(w)?;
@@ -208,13 +208,15 @@ fn apply(db: &Database, mode: ImportMode, items: &[PromptLine]) -> Result<()> {
                 // A new canonical id that equals an existing alias would
                 // silently shadow that alias forever (exact-id wins in
                 // resolve). Reject instead — same rule `new` enforces.
-                let shadowed: Option<String> = tx
-                    .query_row(
-                        "SELECT prompt_id FROM aliases WHERE alias = ?1",
-                        rusqlite::params![pl.prompt.id],
-                        |r| r.get(0),
-                    )
-                    .ok();
+                let shadowed: Option<String> = match tx.query_row(
+                    "SELECT prompt_id FROM aliases WHERE alias = ?1",
+                    rusqlite::params![pl.prompt.id],
+                    |r| r.get(0),
+                ) {
+                    Ok(id) => Some(id),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                    Err(e) => return Err(e.into()),
+                };
                 if shadowed.is_some() {
                     anyhow::bail!(
                         "alias_conflict: id '{}' collides with an existing alias",

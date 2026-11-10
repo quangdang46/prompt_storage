@@ -298,7 +298,13 @@ pub fn cmd_show(db: &Database, query: &str, as_json: bool, color: bool) -> Resul
     let outcome = crate::storage::resolve::resolve(db, query)?;
     match outcome {
         crate::storage::resolve::ResolveOutcome::Hit { id, .. } => {
-            let p = db.get_prompt(&id)?.expect("resolved prompt exists");
+            let Some(p) = db.get_prompt(&id)? else {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({ "error": "not_found", "query": query })
+                );
+                return Ok(1);
+            };
             let aliases = db.aliases_for(&p.id)?;
             if as_json {
                 let payload = ShowPayload::from_prompt(&p, &aliases);

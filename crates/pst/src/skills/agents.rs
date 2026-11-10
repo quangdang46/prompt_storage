@@ -204,19 +204,8 @@ fn compute_relative(link: &Path, canon: &Path) -> Result<String> {
         .take_while(|(a, b)| a == b)
         .count();
 
-    let mut rel = String::new();
-    for _ in common..link_depth {
-        rel.push_str("../");
-    }
-    for comp in &canon_components[common..] {
-        rel.push_str(&comp.as_os_str().to_string_lossy());
-        rel.push('/');
-    }
-    rel.push_str("SKILL_DIR_MARKER");
-    // Replace marker with directory itself (canonical is a directory).
-    let rel = rel.trim_end_matches("SKILL_DIR_MARKER/").to_string() + "/";
-    let _ = rel;
-    // Simpler robust approach: relative path from link_parent to canon dir.
+    // Relative path from link_parent up to the common ancestor, then down
+    // to the canonical dir.
     let mut up = String::new();
     for _ in common..link_depth {
         up.push_str("../");

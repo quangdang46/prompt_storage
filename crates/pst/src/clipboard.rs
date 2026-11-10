@@ -35,10 +35,11 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("{tool}: {e}"))?;
     use std::io::Write;
-    child
+    let stdin = child
         .stdin
         .as_mut()
-        .expect("piped")
+        .ok_or_else(|| "piped stdin missing".to_string())?;
+    stdin
         .write_all(text.as_bytes())
         .map_err(|e| format!("{tool}: {e}"))?;
     drop(child.stdin.take());

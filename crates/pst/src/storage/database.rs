@@ -239,6 +239,61 @@ impl Database {
         Ok(rows)
     }
 
+    /// Filtered summaries (no content, no per-row children queries) —
+    /// cheap listing for `pst list` with the same filter semantics as
+    /// `list_prompts_filtered`.
+    pub fn list_summaries_filtered(
+        &self,
+        category: Option<&str>,
+        tag: Option<&str>,
+        featured_only: bool,
+    ) -> Result<Vec<PromptSummary>> {
+        let mut conditions: Vec<&str> = Vec::new();
+        if category.is_some() {
+            conditions.push("p.category = ?1");
+        }
+        if tag.is_some() {
+            if category.is_some() {
+                conditions.push("p.id IN (SELECT prompt_id FROM prompt_tags WHERE tag = ?2)");
+            } else {
+                conditions.push("p.id IN (SELECT prompt_id FROM prompt_tags WHERE tag = ?1)");
+            }
+        }
+        if featured_only {
+            conditions.push("p.featured = 1");
+        }
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+        let sql = format!(
+            r#"SELECT p.id, p.title, p.description, p.category, p.use_count,
+                      COALESCE((SELECT GROUP_CONCAT(tag, char(31)) FROM prompt_tags t WHERE t.prompt_id = p.id), '')
+               FROM prompts p {where_clause} ORDER BY p.title"#
+        );
+        let cat = category.map(str::to_string);
+        let tagv = tag.map(str::to_string);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = if cat.is_some() && tagv.is_some() {
+            stmt.query_map(
+                rusqlite::params![cat.as_deref(), tagv.as_deref()],
+                summary_row,
+            )?
+        } else if let Some(c) = cat.as_deref() {
+            stmt.query_map(rusqlite::params![c], summary_row)?
+        } else if let Some(t) = tagv.as_deref() {
+            stmt.query_map(rusqlite::params![t], summary_row)?
+        } else {
+            stmt.query_map([], summary_row)?
+        };
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Summaries only (no children) — cheap listing for `pst list`.
     pub fn list_summaries(&self) -> Result<Vec<PromptSummary>> {
         let mut stmt = self.conn.prepare(
@@ -246,22 +301,7 @@ impl Database {
                       COALESCE((SELECT GROUP_CONCAT(tag, char(31)) FROM prompt_tags t WHERE t.prompt_id = p.id), '')
                FROM prompts p ORDER BY p.title"#,
         )?;
-        let rows = stmt.query_map([], |row| {
-            let tags_blob: String = row.get(5)?;
-            Ok(PromptSummary {
-                id: row.get(0)?,
-
-                title: row.get(1)?,
-                description: row.get(2)?,
-                category: row.get(3)?,
-                use_count: row.get(4)?,
-                tags: if tags_blob.is_empty() {
-                    Vec::new()
-                } else {
-                    tags_blob.split('\u{1f}').map(str::to_string).collect()
-                },
-            })
-        })?;
+        let rows = stmt.query_map([], summary_row)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -315,6 +355,9 @@ impl Database {
     /// negative values (lower == better).
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(Prompt, f64)>> {
         let escaped = escape_fts_query(query);
+        if escaped.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut stmt = self.conn.prepare(
             r#"
             SELECT p.id, p.title, p.content, p.description, p.category, p.version, p.author,
@@ -403,6 +446,37 @@ impl Database {
             .prepare("SELECT alias FROM aliases WHERE prompt_id = ?1 ORDER BY alias")?;
         let rows = stmt.query_map(params![prompt_id], |r| r.get(0))?;
         collect(rows)
+    }
+
+    /// Batch alias lookup for export paths — one query instead of N+1.
+    /// Returns prompt_id → aliases (sorted), only for ids that have any.
+    pub fn aliases_for_many(
+        &self,
+        prompt_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        use std::collections::HashMap;
+        let mut out: HashMap<String, Vec<String>> = HashMap::new();
+        // Chunk under SQLite's bound-parameter limit.
+        for chunk in prompt_ids.chunks(500) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT prompt_id, alias FROM aliases WHERE prompt_id IN ({placeholders}) ORDER BY prompt_id, alias"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+            let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for r in rows {
+                let (pid, alias) = r?;
+                out.entry(pid).or_default().push(alias);
+            }
+        }
+        Ok(out)
     }
 
     // ------------------------------------------------------------------
@@ -503,36 +577,34 @@ pub(crate) fn add_alias_in_tx(
     prompt_id: &str,
 ) -> Result<()> {
     validate_alias_shape(alias)?;
-    let id_hit: bool = tx
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1 COLLATE NOCASE",
-            params![alias],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
+    let id_hit: bool = tx.query_row(
+        "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1 COLLATE NOCASE",
+        params![alias],
+        |r| r.get(0),
+    )?;
     if id_hit {
         anyhow::bail!("id_conflict");
     }
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT prompt_id FROM aliases WHERE alias = ?1",
-            params![alias],
-            |r| r.get(0),
-        )
-        .ok();
+    let existing: Option<String> = match tx.query_row(
+        "SELECT prompt_id FROM aliases WHERE alias = ?1",
+        params![alias],
+        |r| r.get(0),
+    ) {
+        Ok(id) => Some(id),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e.into()),
+    };
     if let Some(owner) = existing {
         if owner != prompt_id {
             anyhow::bail!("alias_conflict");
         }
         return Ok(()); // idempotent re-add of same mapping
     }
-    let target_exists: bool = tx
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1",
-            params![prompt_id],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
+    let target_exists: bool = tx.query_row(
+        "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1",
+        params![prompt_id],
+        |r| r.get(0),
+    )?;
     if !target_exists {
         anyhow::bail!("not_found");
     }
@@ -598,6 +670,23 @@ fn map_prompt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Prompt> {
     })
 }
 
+/// Row mapper shared by list_summaries / list_summaries_filtered.
+fn summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PromptSummary> {
+    let tags_blob: String = row.get(5)?;
+    Ok(PromptSummary {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        description: row.get(2)?,
+        category: row.get(3)?,
+        use_count: row.get(4)?,
+        tags: if tags_blob.is_empty() {
+            Vec::new()
+        } else {
+            tags_blob.split('\u{1f}').map(str::to_string).collect()
+        },
+    })
+}
+
 fn collect<T>(
     rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>>,
 ) -> Result<Vec<T>>
@@ -613,13 +702,20 @@ where
 
 /// Escape user query text before handing it to FTS5 MATCH so special
 /// characters never panic the parser.
+///
+/// Returns "" for degenerate input (whitespace/punctuation-only): FTS5
+/// would either syntax-error or match nothing meaningful, and callers
+/// treat "" as "no usable query" → empty result set, never `internal`.
 pub fn escape_fts_query(query: &str) -> String {
     // Wrap each token in double quotes; escape embedded quotes. Tokens are
     // OR-ed: any token matching keeps the prompt discoverable (BM25 ranks
     // multi-token matches higher automatically). Trailing `*` gives
     // per-token prefix matching so "sec" still finds "security".
+    // Tokens with NO alphanumeric content ("!!!", "—", "((") tokenize to
+    // nothing inside FTS5 and can produce a syntax error — drop them.
     query
         .split_whitespace()
+        .filter(|tok| tok.chars().any(|c| c.is_alphanumeric()))
         .map(|tok| format!("\"{}\"*", tok.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ")

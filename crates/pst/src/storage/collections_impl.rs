@@ -44,13 +44,11 @@ impl Database {
     pub fn collection_add(&self, name: &str, prompt_ids: &[String]) -> Result<(usize, usize)> {
         let tx = self.conn().unchecked_transaction()?;
         for (idx, pid) in prompt_ids.iter().enumerate() {
-            let exists: bool = tx
-                .query_row(
-                    "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1",
-                    params![pid],
-                    |r| r.get(0),
-                )
-                .unwrap_or(false);
+            let exists: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM prompts WHERE id = ?1",
+                params![pid],
+                |r| r.get(0),
+            )?;
             if !exists {
                 anyhow::bail!(format!("member_{idx}_not_found:{pid}"));
             }
@@ -113,21 +111,42 @@ impl Database {
     }
 
     pub fn collections_list(&self) -> Result<Vec<CollectionDetail>> {
-        let names: Vec<String> = {
-            let mut stmt = self
-                .conn()
-                .prepare("SELECT name FROM collections ORDER BY name")?;
-            let rows = stmt.query_map([], |r| r.get(0))?;
-            let mut out = Vec::new();
-            for r in rows {
-                out.push(r?);
-            }
-            out
-        };
-        let mut out = Vec::new();
-        for n in names {
-            if let Some(d) = self.collection_detail(&n)? {
-                out.push(d);
+        // Two queries total (not N+1 collection_detail calls): headers,
+        // then all membership rows grouped by collection.
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT name, description, created_at FROM collections ORDER BY name")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(CollectionDetail {
+                name: r.get(0)?,
+                description: r.get(1)?,
+                created_at: r.get(2)?,
+                prompts: Vec::new(),
+            })
+        })?;
+        let mut out: Vec<CollectionDetail> = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        drop(stmt);
+        if out.is_empty() {
+            return Ok(out);
+        }
+        let mut mstmt = self.conn().prepare(
+            "SELECT collection_name, prompt_id FROM collection_prompts ORDER BY collection_name, added_at ASC",
+        )?;
+        let mut mrows = mstmt.query([])?;
+        use std::collections::HashMap;
+        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+        while let Some(row) = mrows.next()? {
+            members
+                .entry(row.get::<_, String>(0)?)
+                .or_default()
+                .push(row.get::<_, String>(1)?);
+        }
+        for d in &mut out {
+            if let Some(m) = members.remove(&d.name) {
+                d.prompts = m;
             }
         }
         Ok(out)
