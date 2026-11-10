@@ -40,7 +40,23 @@ pub fn valid_collection_name(name: &str) -> bool {
 }
 
 /// CLI handler: `pst collection <verb> ...`
-pub fn cmd_collection(db: &Database, args: &[String], as_json: bool) -> Result<i32> {
+pub fn cmd_collection(db: &Database, args: &[String], mut as_json: bool) -> Result<i32> {
+    // external_subcommand captures trailing tokens verbatim, so a global
+    // `--json`/`-j` placed after the verb lands inside `args`. Recover it
+    // here so `pst collection list --json` works like every other command.
+    let filtered: Vec<String> = args
+        .iter()
+        .filter(|a| {
+            if a.as_str() == "--json" || a.as_str() == "-j" {
+                as_json = true;
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    let args = filtered.as_slice();
     match args.split_first() {
         None => {
             let all = db.collections_list()?;
@@ -68,6 +84,8 @@ pub fn cmd_collection(db: &Database, args: &[String], as_json: bool) -> Result<i
 
 fn handle_verb(db: &Database, verb: &str, rest: &[String], _as_json: bool) -> Result<i32> {
     match (verb, rest) {
+        // 'list' is the advertised verb for the bare-listing path.
+        ("list", []) => cmd_collection(db, &[], _as_json),
         ("create", [name]) => create(db, name, None),
         ("create", [name, rest @ ..]) if rest.first().map(String::as_str) == Some("--desc") => {
             let desc = rest.get(1).cloned();

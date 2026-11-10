@@ -64,10 +64,7 @@ fn find_project_root() -> Option<PathBuf> {
         if probe.join(".git").exists() || probe.join(".agents").exists() {
             return Some(probe);
         }
-        match probe.parent() {
-            Some(p) => probe = p.to_path_buf(),
-            None => return None,
-        }
+        probe = probe.parent()?.to_path_buf();
     }
 }
 

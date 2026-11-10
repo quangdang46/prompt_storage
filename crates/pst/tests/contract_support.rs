@@ -61,6 +61,8 @@ impl ContractEnv {
     /// Seed the library by writing directly through the lib API.
     /// (Contract tests exercise the BINARY; seeding uses the same storage
     /// code path the binary itself would use.)
+    /// Not every test binary uses this helper — allow dead_code.
+    #[allow(dead_code)]
     pub fn seed_prompt(&self, id: &str, title: &str, content: &str) {
         let root = self.home.path().to_path_buf();
         let db = pst::storage::database::Database::open(&root).expect("open seed db");

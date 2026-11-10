@@ -94,6 +94,16 @@ pub fn cmd_search(db: &Database, query: &str, limit: usize, as_json: bool) -> Re
         eprintln!("{}", serde_json::json!({"error":"empty_query"}));
         return Ok(1);
     }
+    // --limit 0 means "no results" — honor it literally.
+    if limit == 0 {
+        if as_json || !atty::is(atty::Stream::Stdout) {
+            println!(
+                "{}",
+                serde_json::json!({ "results": [], "query": query, "count": 0 })
+            );
+        }
+        return Ok(0);
+    }
     let hits = db.search(query, limit)?;
     if as_json || !atty::is(atty::Stream::Stdout) {
         let rows: Vec<serde_json::Value> = hits

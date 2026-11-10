@@ -4,12 +4,17 @@
 
 use anyhow::Result;
 use serde::Serialize;
+use std::io::Read;
 
 use crate::model::Prompt;
 use crate::storage::database::Database;
 
 /// Max content size accepted via `new --from -` (plan polish R4).
 pub const MAX_CONTENT_BYTES: usize = 1_048_576;
+/// Max title length (chars) — titles are metadata, not content.
+pub const MAX_TITLE_CHARS: usize = 1024;
+/// Max canonical id length (chars).
+pub const MAX_ID_CHARS: usize = 128;
 
 /// Error payload for machine consumers; also human-readable on stderr.
 pub struct CmdError {
@@ -49,12 +54,15 @@ pub struct NewArgs<'a> {
 /// `pst new <id>` — create a prompt from --from FILE | - (stdin) | editor.
 /// Editor paths are TTY-gated (agents can't hang).
 pub fn cmd_new(db: &Database, args: NewArgs<'_>) -> Result<i32> {
-    // Validate canonical id shape.
+    // Validate canonical id shape + length.
     let id = args.id;
-    if !is_canonical_id(id) {
+    if !is_canonical_id(id) || id.chars().count() > MAX_ID_CHARS {
         return Ok(CmdError {
             code: "invalid_id",
-            message: format!("id must be lowercase kebab-case, got '{}'", id),
+            message: format!(
+                "id must be lowercase kebab-case (<= {MAX_ID_CHARS} chars), got '{}'",
+                id
+            ),
             extra: vec![],
             exit: 1,
         }
@@ -88,8 +96,12 @@ pub fn cmd_new(db: &Database, args: NewArgs<'_>) -> Result<i32> {
     // Content source resolution.
     let content = match args.from.as_deref() {
         Some("-") => {
+            // Bounded read: at most MAX_CONTENT_BYTES+1 so a hostile or
+            // mistaken infinite stream can't exhaust memory before the
+            // size check runs.
             let mut buf = String::new();
-            match std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf) {
+            let mut limited = std::io::stdin().take((MAX_CONTENT_BYTES + 1) as u64);
+            match std::io::Read::read_to_string(&mut limited, &mut buf) {
                 Ok(_) => buf,
                 Err(e) => {
                     return Ok(CmdError {
@@ -158,28 +170,71 @@ pub fn cmd_new(db: &Database, args: NewArgs<'_>) -> Result<i32> {
         }
         .emit());
     }
+    if content.contains('\0') {
+        return Ok(CmdError {
+            code: "invalid_content",
+            message: "content must not contain NUL bytes".into(),
+            extra: vec![],
+            exit: 1,
+        }
+        .emit());
+    }
 
-    let mut prompt = Prompt::new(
-        id,
-        args.title.clone().unwrap_or_else(|| id.replace('-', " ")),
-        content,
-    );
+    // Title validation: single-line, bounded, no control chars.
+    let title = args.title.clone().unwrap_or_else(|| id.replace('-', " "));
+    if title.chars().count() > MAX_TITLE_CHARS {
+        return Ok(CmdError {
+            code: "title_too_long",
+            message: format!("title exceeds {MAX_TITLE_CHARS} chars"),
+            extra: vec![],
+            exit: 1,
+        }
+        .emit());
+    }
+    if title.chars().any(|c| c.is_control()) {
+        return Ok(CmdError {
+            code: "invalid_title",
+            message: "title must be a single line without control characters".into(),
+            extra: vec![],
+            exit: 1,
+        }
+        .emit());
+    }
+
+    let mut prompt = Prompt::new(id, title, content);
     prompt.description = args.description.clone();
     prompt.category = args.category.clone();
     prompt.tags = args.tags.clone();
 
     // Parse declared variables: --var NAME=type[=default]
+    // NAME may end with '!' to mark the variable required.
+    // NAME must be usable as a --VAR= token: first char [A-Z_], rest
+    // [A-Z0-9_], and at least one letter (so '9X', '___', '9' are rejected
+    // — they could never be filled via the CLI anyway).
     for spec in &args.vars {
         let mut parts = spec.splitn(3, '=');
-        let Some(name) = parts.next() else { continue };
+        let Some(raw_name) = parts.next() else {
+            continue;
+        };
+        let (name, required) = match raw_name.strip_suffix('!') {
+            Some(base) => (base, true),
+            None => (raw_name, false),
+        };
         let valid_name = !name.is_empty()
             && name
                 .chars()
-                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit());
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+            && name.chars().any(|c| c.is_ascii_uppercase());
         if !valid_name {
             return Ok(CmdError {
                 code: "invalid_var_name",
-                message: format!("variable name must be UPPER_SNAKE_CASE, got '{name}'"),
+                message: format!(
+                    "variable name must be UPPER_SNAKE_CASE (optionally '!'-suffixed for required), got '{raw_name}'"
+                ),
                 extra: vec![],
                 exit: 1,
             }
@@ -191,7 +246,7 @@ pub fn cmd_new(db: &Database, args: NewArgs<'_>) -> Result<i32> {
             Some(var_type) => prompt.variables.push(crate::model::PromptVariable {
                 name: name.to_string(),
                 var_type,
-                required: false,
+                required,
                 description: None,
                 default,
             }),
@@ -369,9 +424,10 @@ pub fn cmd_alias(db: &Database, id: &str, aliases: &[String]) -> Result<i32> {
             "alias_conflict"
         } else if msg.contains("not_found") {
             "not_found"
-        } else if msg.contains("empty_alias") {
-            "invalid_alias"
-        } else if msg.contains("alias_too_long") || msg.contains("alias_control_chars") {
+        } else if msg.contains("empty_alias")
+            || msg.contains("alias_too_long")
+            || msg.contains("alias_control_chars")
+        {
             "invalid_alias"
         } else {
             "alias_error"

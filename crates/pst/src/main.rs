@@ -189,10 +189,9 @@ enum Sub {
     /// Render prompt with variable substitution
     Render {
         query: String,
+        /// Interactively fill missing required variables (TTY only)
         #[arg(long)]
         fill: bool,
-        #[arg(long = "max-context")]
-        max_context: Option<usize>,
     },
 
     /// Copy prompt content to clipboard (with optional variable filling)
@@ -418,8 +417,8 @@ fn main() -> std::process::ExitCode {
             limit,
             cli.json,
         ),
-        Some(Sub::Render { query, .. }) => {
-            pst::commands::render_cmd(&db, &query, cli.json, &prescan.vars)
+        Some(Sub::Render { query, fill }) => {
+            pst::commands::render_cmd(&db, &query, cli.json, &prescan.vars, fill)
         }
         Some(Sub::Copy { query, fill }) => {
             pst::commands::copy_cmd(&db, &query, fill, cli.json, &prescan.vars)
