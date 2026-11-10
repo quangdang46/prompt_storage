@@ -330,6 +330,37 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
     let home = home_dir();
+
+    // DB-free commands dispatch BEFORE the database is opened: install,
+    // uninstall, completion and config must never create/mutate store.db,
+    // and must still work when the DB is corrupt or written by a newer
+    // schema (e.g. `pst uninstall` has to run to fix a broken install).
+    match &cli.cmd {
+        Some(Sub::Install {
+            project,
+            personal,
+            force,
+        }) => {
+            return finish(run_install(*project, *personal, *force));
+        }
+        Some(Sub::Uninstall { project, personal }) => {
+            return finish(run_uninstall(*project, *personal));
+        }
+        Some(Sub::Completion { shell }) => {
+            return finish(run_completion(shell));
+        }
+        Some(Sub::Config { action, key, value }) => {
+            return finish(pst::commands::system::cmd_config(
+                &home,
+                action,
+                key.as_deref(),
+                value.as_deref(),
+                cli.json,
+            ));
+        }
+        _ => {}
+    }
+
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => {
@@ -405,77 +436,6 @@ fn main() -> std::process::ExitCode {
         Some(Sub::Collection {
             args: ColArgs::Args(a),
         }) => pst::commands::collections::cmd_collection(&db, &a, cli.json),
-        Some(Sub::Install {
-            project,
-            personal,
-            force,
-        }) => {
-            let root = pst::skills::agents::resolve_root(project, personal);
-            match pst::skills::agents::install(&root, force) {
-                Ok(report) => {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "installed": true,
-                            "canonical": report.canonical.display().to_string(),
-                            "adapters": report.installed,
-                        })
-                    );
-                    Ok(0)
-                }
-                Err(e) => {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"error":"install_failed","message":e.to_string()})
-                    );
-                    Ok(1)
-                }
-            }
-        }
-        Some(Sub::Uninstall { project, personal }) => {
-            let root = pst::skills::agents::resolve_root(project, personal);
-            match pst::skills::agents::uninstall(&root) {
-                Ok(n) => {
-                    println!(
-                        "{}",
-                        serde_json::json!({ "uninstalled": true, "artifacts": n })
-                    );
-                    Ok(0)
-                }
-                Err(e) => {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"error":"uninstall_failed","message":e.to_string()})
-                    );
-                    Ok(1)
-                }
-            }
-        }
-        Some(Sub::Completion { shell }) => {
-            use clap_complete::{generate, shells};
-            let mut cmd = Cli::command();
-            match shell.as_str() {
-                "bash" => generate(shells::Bash, &mut cmd, "pst", &mut io::stdout()),
-                "zsh" => generate(shells::Zsh, &mut cmd, "pst", &mut io::stdout()),
-                "fish" => generate(shells::Fish, &mut cmd, "pst", &mut io::stdout()),
-                "powershell" => generate(shells::PowerShell, &mut cmd, "pst", &mut io::stdout()),
-                other => {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"error":"unsupported_shell","shell":other})
-                    );
-                    return std::process::ExitCode::from(1);
-                }
-            }
-            return std::process::ExitCode::SUCCESS;
-        }
-        Some(Sub::Config { action, key, value }) => pst::commands::system::cmd_config(
-            &home,
-            &action,
-            key.as_deref(),
-            value.as_deref(),
-            cli.json,
-        ),
         Some(Sub::Status) => pst::commands::system::cmd_status(&db, &home, cli.json),
         Some(Sub::Doctor { fix }) => pst::commands::system::cmd_doctor(&db, &home, fix, cli.json),
         Some(Sub::Interactive) => {
@@ -532,8 +492,16 @@ fn main() -> std::process::ExitCode {
                 }
             }
         }
+        // Install/Uninstall/Completion/Config dispatch before open_db.
+        _ => unreachable!("DB-free commands return before the database opens"),
     };
 
+    finish(result)
+}
+
+/// Map a command result to the process exit code (shared tail for both
+/// the DB-free early dispatch and the DB-backed dispatch).
+fn finish(result: Result<i32>) -> std::process::ExitCode {
     match result {
         Ok(code) => std::process::ExitCode::from(code as u8),
         Err(e) => {
@@ -544,4 +512,68 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::from(1)
         }
     }
+}
+
+fn run_install(project: bool, personal: bool, force: bool) -> Result<i32> {
+    let root = pst::skills::agents::resolve_root(project, personal);
+    match pst::skills::agents::install(&root, force) {
+        Ok(report) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "installed": true,
+                    "canonical": report.canonical.display().to_string(),
+                    "adapters": report.installed,
+                    "skipped": report.skipped,
+                })
+            );
+            Ok(0)
+        }
+        Err(e) => {
+            eprintln!(
+                "{}",
+                serde_json::json!({"error":"install_failed","message":e.to_string()})
+            );
+            Ok(1)
+        }
+    }
+}
+
+fn run_uninstall(project: bool, personal: bool) -> Result<i32> {
+    let root = pst::skills::agents::resolve_root(project, personal);
+    match pst::skills::agents::uninstall(&root) {
+        Ok(n) => {
+            println!(
+                "{}",
+                serde_json::json!({ "uninstalled": true, "artifacts": n })
+            );
+            Ok(0)
+        }
+        Err(e) => {
+            eprintln!(
+                "{}",
+                serde_json::json!({"error":"uninstall_failed","message":e.to_string()})
+            );
+            Ok(1)
+        }
+    }
+}
+
+fn run_completion(shell: &str) -> Result<i32> {
+    use clap_complete::{generate, shells};
+    let mut cmd = Cli::command();
+    match shell {
+        "bash" => generate(shells::Bash, &mut cmd, "pst", &mut io::stdout()),
+        "zsh" => generate(shells::Zsh, &mut cmd, "pst", &mut io::stdout()),
+        "fish" => generate(shells::Fish, &mut cmd, "pst", &mut io::stdout()),
+        "powershell" => generate(shells::PowerShell, &mut cmd, "pst", &mut io::stdout()),
+        other => {
+            eprintln!(
+                "{}",
+                serde_json::json!({"error":"unsupported_shell","shell":other})
+            );
+            return Ok(1);
+        }
+    }
+    Ok(0)
 }
