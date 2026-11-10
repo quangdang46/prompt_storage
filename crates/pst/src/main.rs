@@ -21,7 +21,7 @@ use std::io;
 )]
 struct Cli {
     /// Output machine-readable JSON
-    #[arg(long, short = 'j')]
+    #[arg(long, short = 'j', global = true)]
     json: bool,
 
     /// Disable colored output
@@ -294,8 +294,11 @@ fn open_db() -> Result<Database> {
 fn main() -> std::process::ExitCode {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Pre-scan for --VAR=value tokens BEFORE clap sees argv.
-    let prescan: Prescan = prescan(&raw_args);
+    // Pre-scan for --VAR=value tokens BEFORE clap sees argv. Only names
+    // that are NOT real clap flags become template variables — every
+    // declared `--flag=value` reaches clap untouched.
+    let known_flags = pst::argv::collect_flag_names(&Cli::command());
+    let prescan: Prescan = prescan(&raw_args, &known_flags);
     if !prescan.reserved_errors.is_empty() {
         for tok in &prescan.reserved_errors {
             eprintln!(
@@ -504,8 +507,21 @@ fn main() -> std::process::ExitCode {
         Some(Sub::Tags) => pst::commands::discovery::cmd_tags(&db, cli.json),
         // Bare positional words → direct mode.
         None | Some(Sub::Direct(_)) => {
+            // Direct mode accepts any bare word(s): join them into one
+            // query so `pst code review` searches "code review", not "code".
             let query = match &cli.cmd {
-                Some(Sub::Direct(words)) => words.first().cloned(),
+                // Join bare words into the full query; drop stray flag-like
+                // tokens that external_subcommand may have captured (e.g.
+                // `pst foo --json` puts "--json" in words, not in cli.json).
+                Some(Sub::Direct(words)) if !words.is_empty() => {
+                    let q = words
+                        .iter()
+                        .filter(|w| !w.starts_with('-'))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    (!q.is_empty()).then_some(q)
+                }
                 _ => None,
             };
             match query {
