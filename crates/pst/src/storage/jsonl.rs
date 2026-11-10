@@ -46,44 +46,34 @@ struct PromptLine {
 
 /// Export the entire library to `path` atomically. Returns prompt count.
 pub fn export_jsonl(db: &Database, path: &Path) -> Result<usize> {
+    let prompts = db.list_prompts_filtered(None, None, false)?;
+    export_jsonl_prompts(db, path, &prompts)
+}
+
+/// Export a caller-selected prompt set to `path` atomically.
+/// `prompts` must already be hydrated `Prompt` rows (ids/aliases resolved
+/// by the caller). Returns the number of prompts written.
+pub fn export_jsonl_prompts(db: &Database, path: &Path, prompts: &[Prompt]) -> Result<usize> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let prompts = db.list_prompts_filtered(None, None, false)?;
     let count = prompts.len();
 
-    let temp_path = path.with_extension("jsonl.tmp");
-    {
+    // Unique temp name (pid + counter) so concurrent exports can't collide,
+    // and it's removed on failure so no .tmp litter remains.
+    let temp_path = path.with_extension(format!("jsonl.tmp{}", std::process::id()));
+    let write_result = (|| -> Result<()> {
         let file = File::create(&temp_path)
             .with_context(|| format!("creating temp file {:?}", temp_path))?;
         let mut writer = BufWriter::new(file);
-
-        let meta = JsonlMeta {
-            meta: MetaInfo {
-                version: db
-                    .get_meta("data_version")
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| "0".into()),
-                count,
-                exported_at: Utc::now().to_rfc3339(),
-                schema_version: LATEST_SCHEMA_VERSION,
-            },
-        };
-        serde_json::to_writer(&mut writer, &meta)?;
-        writeln!(writer)?;
-
-        for p in &prompts {
-            let line = PromptLine {
-                prompt: p.clone(),
-                aliases: db.aliases_for(&p.id)?,
-            };
-            serde_json::to_writer(&mut writer, &line)?;
-            writeln!(writer)?;
-        }
-
+        write_jsonl(db, prompts, &mut writer)?;
         writer.flush()?;
         writer.into_inner()?.sync_all()?; // fsync before rename
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        let _ = fs::remove_file(&temp_path); // no .tmp litter on failure
+        return Err(e);
     }
 
     // Atomic rename; Windows rename fails if destination exists.
@@ -91,11 +81,52 @@ pub fn export_jsonl(db: &Database, path: &Path) -> Result<usize> {
     if path.exists() {
         fs::remove_file(path).with_context(|| format!("removing existing {:?}", path))?;
     }
-    fs::rename(&temp_path, path)
-        .with_context(|| format!("renaming {:?} → {:?}", temp_path, path))?;
+    if let Err(e) = fs::rename(&temp_path, path)
+        .with_context(|| format!("renaming {:?} → {:?}", temp_path, path))
+    {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
 
     db.set_meta("data_version", &Utc::now().to_rfc3339())?;
     Ok(count)
+}
+
+/// Write the JSONL document (meta header + one line per prompt) to any
+/// writer — used for `--stdout` export where no temp file is involved.
+pub fn export_jsonl_to<W: Write>(db: &Database, prompts: &[Prompt], w: &mut W) -> Result<usize> {
+    write_jsonl(db, prompts, w)?;
+    w.flush()?;
+    Ok(prompts.len())
+}
+
+/// Shared serializer: `_meta` header line, then one self-contained
+/// prompt line (variables + aliases embedded) per prompt.
+fn write_jsonl(db: &Database, prompts: &[Prompt], w: &mut impl Write) -> Result<()> {
+    let meta = JsonlMeta {
+        meta: MetaInfo {
+            version: db
+                .get_meta("data_version")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "0".into()),
+            count: prompts.len(),
+            exported_at: Utc::now().to_rfc3339(),
+            schema_version: LATEST_SCHEMA_VERSION,
+        },
+    };
+    serde_json::to_writer(&mut *w, &meta)?;
+    writeln!(w)?;
+
+    for p in prompts {
+        let line = PromptLine {
+            prompt: p.clone(),
+            aliases: db.aliases_for(&p.id)?,
+        };
+        serde_json::to_writer(&mut *w, &line)?;
+        writeln!(w)?;
+    }
+    Ok(())
 }
 
 /// Import mode selection.

@@ -71,21 +71,47 @@ pub fn format_markdown(p: &Prompt) -> String {
     out
 }
 
-/// Export prompts as markdown files into `dir`. Returns written paths.
-pub fn export_markdown_all(db: &Database, dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+/// Result of a markdown directory export.
+#[derive(Debug)]
+pub struct MarkdownExport {
+    /// Files written, in prompt order.
+    pub files: Vec<std::path::PathBuf>,
+    /// Prompt ids skipped because their id is not filename-safe
+    /// (defense-in-depth: import validation should prevent these, but a
+    /// hand-edited DB must not abort the whole export mid-run).
+    pub skipped: Vec<String>,
+}
+
+/// Export prompts as markdown files into `dir`. Unsafe ids are skipped
+/// and reported in `skipped` instead of aborting the run partway.
+pub fn export_markdown_filtered(dir: &Path, prompts: &[Prompt]) -> Result<MarkdownExport> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     ensure_within(dir, Path::new(""))?;
-    let prompts = db.list_prompts_filtered(None, None, false)?;
-    let mut written = Vec::new();
-    for p in &prompts {
-        let name = safe_filename(&p.id, "md")?;
+    let mut out = MarkdownExport {
+        files: Vec::new(),
+        skipped: Vec::new(),
+    };
+    for p in prompts {
+        let name = match safe_filename(&p.id, "md") {
+            Ok(n) => n,
+            Err(_) => {
+                out.skipped.push(p.id.clone());
+                continue;
+            }
+        };
         let target = dir.join(name);
         ensure_within(dir, &target)?;
         std::fs::write(&target, format_markdown(p))
             .with_context(|| format!("writing {}", target.display()))?;
-        written.push(target);
+        out.files.push(target);
     }
-    Ok(written)
+    Ok(out)
+}
+
+/// Export the entire library as markdown files into `dir`.
+pub fn export_markdown_all(db: &Database, dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let prompts = db.list_prompts_filtered(None, None, false)?;
+    Ok(export_markdown_filtered(dir, &prompts)?.files)
 }
 
 /// Re-export core JSONL functions under a unified API for main.rs dispatch.

@@ -99,7 +99,9 @@ pub fn copy_cmd(
     }
 }
 
-/// `pst export` — JSONL to file, or markdown files into a directory.
+/// `pst export` — JSONL or markdown, to file/stdout/directory.
+/// `--ids`/`--all` select the prompt set for EVERY format (previously only
+/// the markdown --stdout branch honored them).
 #[allow(clippy::too_many_arguments)]
 pub fn export_cmd(
     db: &Database,
@@ -112,15 +114,71 @@ pub fn export_cmd(
 ) -> Result<i32> {
     use crate::storage::resolve::{ResolveOutcome, resolve};
 
-    if format == "jsonl" {
+    let is_jsonl = match format {
+        "jsonl" => true,
+        "markdown" | "md" => false,
+        other => {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "error": "invalid_format",
+                    "format": other,
+                    "hint": "supported: jsonl, markdown (alias: md)"
+                })
+            );
+            return Ok(1);
+        }
+    };
+
+    // Resolve the target set once, shared by every format.
+    //   --all            → every prompt
+    //   --ids a,b        → those prompts (aliases/prefixes resolve)
+    //   neither          → every prompt (documented default)
+    let targets: Vec<crate::model::Prompt> = if all || ids.is_empty() {
+        db.list_prompts_filtered(None, None, false)?
+    } else {
+        let mut v = Vec::with_capacity(ids.len());
+        for id in ids {
+            match resolve(db, id)? {
+                ResolveOutcome::Hit { id: rid, .. } => match db.get_prompt(&rid)? {
+                    Some(p) => v.push(p),
+                    None => {
+                        eprintln!("{}", serde_json::json!({"error":"not_found","query":id}));
+                        return Ok(1);
+                    }
+                },
+                other => return crate::commands::forward_err(other),
+            }
+        }
+        v
+    };
+
+    if is_jsonl {
+        if stdout {
+            let n = crate::storage::jsonl::export_jsonl_to(
+                db,
+                &targets,
+                &mut std::io::stdout().lock(),
+            )?;
+            if as_json || !atty::is(atty::Stream::Stdout) {
+                // stdout already carries the JSONL document; report counts
+                // on stderr so stdout stays a clean backup stream.
+                eprintln!(
+                    "{}",
+                    serde_json::json!({ "exported": n, "format": "jsonl", "stdout": true })
+                );
+            }
+            return Ok(0);
+        }
         let Some(path) = out else {
             eprintln!(
                 "{}",
-                serde_json::json!({"error":"missing_out","hint":"--out PATH required for jsonl"})
+                serde_json::json!({"error":"missing_out","hint":"--out PATH required for jsonl (or --stdout)"})
             );
             return Ok(1);
         };
-        let n = crate::commands::export::export_jsonl(db, std::path::Path::new(path))?;
+        let n =
+            crate::storage::jsonl::export_jsonl_prompts(db, std::path::Path::new(path), &targets)?;
         if as_json || !atty::is(atty::Stream::Stdout) {
             println!(
                 "{}",
@@ -134,25 +192,8 @@ pub fn export_cmd(
 
     // markdown export
     if stdout {
-        let targets: Vec<String> = if all {
-            db.list_prompts_filtered(None, None, false)?
-                .into_iter()
-                .map(|p| p.id)
-                .collect()
-        } else {
-            ids.to_vec()
-        };
-        for id in &targets {
-            match resolve(db, id)? {
-                ResolveOutcome::Hit { id: rid, .. } => {
-                    let p = db.get_prompt(&rid)?.expect("exists");
-                    print!("{}", crate::commands::export::format_markdown(&p));
-                }
-                _ => {
-                    eprintln!("{}", serde_json::json!({"error":"not_found","query":id}));
-                    return Ok(1);
-                }
-            }
+        for p in &targets {
+            print!("{}", crate::commands::export::format_markdown(p));
         }
         return Ok(0);
     }
@@ -160,22 +201,26 @@ pub fn export_cmd(
     let Some(dir) = out else {
         eprintln!(
             "{}",
-            serde_json::json!({"error":"missing_out","hint":"--out DIR required for md export"})
+            serde_json::json!({"error":"missing_out","hint":"--out DIR required for md export (or --stdout)"})
         );
         return Ok(1);
     };
-    let dir_path = std::path::Path::new(dir);
-    let files = crate::commands::export::export_markdown_all(db, dir_path)?;
+    let result =
+        crate::commands::export::export_markdown_filtered(std::path::Path::new(dir), &targets)?;
     if as_json || !atty::is(atty::Stream::Stdout) {
         println!(
             "{}",
             serde_json::json!({
-                "exported": files.len(),
-                "files": files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
+                "exported": result.files.len(),
+                "files": result.files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
+                "skipped": result.skipped,
             })
         );
     } else {
-        println!("Exported {} markdown files → {}", files.len(), dir);
+        println!("Exported {} markdown files → {}", result.files.len(), dir);
+        for id in &result.skipped {
+            eprintln!("skipped unsafe id: {id}");
+        }
     }
     Ok(0)
 }
