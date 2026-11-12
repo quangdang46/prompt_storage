@@ -7,6 +7,10 @@ use sha2::{Digest, Sha256};
 
 pub const SKILL_NAME: &str = "prompt-storage";
 
+/// Marker embedded in generated SKILL.md so copy-mode adapters can prove a
+/// pre-existing file is pst-managed before refreshing it.
+pub const GENERATED_MARKER: &str = "<!-- pst-generated -->";
+
 /// The five behavioral rules, verbatim from the plan.
 pub const BEHAVIORAL_RULES: &str = "\
 When a task would benefit from a reusable prompt or workflow:
@@ -54,10 +58,13 @@ pst show <id>                 # metadata + preview
 - If pst reports ambiguity, ask the user or refine the query; it never
   guesses silently.
 - `PST_HOME` relocates the library root (per-project or per-user scoping).
+
+{marker}
 "#,
         name = SKILL_NAME,
         title = "Prompt Storage",
         rules = BEHAVIORAL_RULES,
+        marker = GENERATED_MARKER,
     )
 }
 

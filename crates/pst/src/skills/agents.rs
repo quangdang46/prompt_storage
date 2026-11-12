@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+#[cfg(not(unix))]
+use super::skill_md::GENERATED_MARKER;
 use super::skill_md::{SKILL_NAME, generate_skill_md, sha256_hex};
 
 /// One agent adapter definition.
@@ -176,17 +178,23 @@ fn wire_adapter(root: &Path, adapter: &AgentAdapter, canon: &Path, content: &str
         // Copy fallback on filesystems without symlink support.
         let _ = canon;
         let file = target_dir.join("SKILL.md");
-        let needs = !file.exists()
-            || std::fs::read_to_string(&file)
-                .map(|e| e != content)
-                .unwrap_or(true);
-        if needs {
-            std::fs::create_dir_all(&target_dir)?;
-            std::fs::write(&file, content)?;
-            Ok(true)
-        } else {
-            Ok(false)
+        if file.exists() {
+            let existing = std::fs::read_to_string(&file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            if existing == content {
+                return Ok(false);
+            }
+            // Refresh only copies that carry the pst-generated marker;
+            // anything else is user data — report, never clobber.
+            if !existing.contains(GENERATED_MARKER) {
+                return Err(anyhow::anyhow!(
+                    "existing SKILL.md is not pst-managed; refusing to overwrite"
+                ));
+            }
         }
+        std::fs::create_dir_all(&target_dir)?;
+        std::fs::write(&file, content)?;
+        Ok(true)
     }
 }
 
